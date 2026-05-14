@@ -9,6 +9,8 @@ from email.utils import parsedate_to_datetime
 
 from googleapiclient.discovery import Resource
 
+from app.email.attachment_detector import detect_attachments
+
 logger = logging.getLogger(__name__)
 
 NOREPLY_PATTERN = re.compile(r"(?:^|[._-])(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply)(?:@|$)")
@@ -58,6 +60,8 @@ class GmailMessage:
     snippet: str
     body_text: str
     label_ids: list[str]
+    has_attachments: bool
+    attachment_names: list[str]
 
 
 @dataclass(slots=True)
@@ -127,6 +131,7 @@ class GmailReader:
         sender_email = (sender_email_match.group(1) if sender_email_match else raw_from).strip().lower()
         sender_name = raw_from.replace(f"<{sender_email}>", "").strip(' "')
         body_text, _ = self._extract_body(message_payload)
+        attachment_meta = detect_attachments(message_payload)
         internal_ts = int(payload.get("internalDate", "0") or "0")
         received_at = datetime.fromtimestamp(internal_ts / 1000, tz=timezone.utc) if internal_ts else datetime.now(
             tz=timezone.utc
@@ -152,6 +157,8 @@ class GmailReader:
             snippet=str(payload.get("snippet", "")),
             body_text=body_text,
             label_ids=[str(v) for v in payload.get("labelIds", [])],
+            has_attachments=attachment_meta.has_attachments,
+            attachment_names=attachment_meta.filenames,
         )
 
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:

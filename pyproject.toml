@@ -5,12 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-email-workflow-system"
 version = "0.1.0"
-description = "AI-assisted Outlook email analysis and draft generation workflow"
+description = "Gmail-native AI email assistant with draft-only workflow"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.27.0",
-  "msal>=1.29.0",
   "google-api-python-client>=2.169.0",
   "google-auth-oauthlib>=1.2.0",
   "pydantic>=2.8.0",

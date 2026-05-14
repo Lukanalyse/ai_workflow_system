@@ -4,38 +4,36 @@ import logging
 from datetime import datetime
 
 import streamlit as st
+from googleapiclient.discovery import build
 
-from app.auth.microsoft_auth import MicrosoftAuthManager
+from app.auth.gmail_auth import GmailAuthManager
 from app.config.settings import get_settings
-from app.database.sqlite_manager import ProcessedEmailRecord, SQLiteManager
+from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
 from app.email.clean_email import clean_email_body
-from app.email.create_draft import OutlookDraftCreator
-from app.email.filters import EmailFilterConfig
-from app.email.read_emails import OutlookEmailReader
+from app.email.gmail_draft_creator import GmailDraftCreator
+from app.email.gmail_reader import GmailReadConfig, GmailReader
 from app.llm.classify import classify_email
 from app.llm.generate_reply import generate_reply_draft
 from app.llm.llm_client import OpenAICompatibleClient
 from app.llm.prompt_loader import PromptLoader
 from app.llm.summarize import summarize_email
 
-
 logger = logging.getLogger(__name__)
-
 TONE_OPTIONS = ["formal", "academic", "concise", "friendly", "recruiter", "research"]
 
 
 @st.cache_resource
-def init_services() -> tuple[OutlookEmailReader, OutlookDraftCreator, OpenAICompatibleClient, PromptLoader, SQLiteManager]:
+def init_services() -> tuple[GmailReader, GmailDraftCreator, OpenAICompatibleClient, PromptLoader, SQLiteManager]:
     settings = get_settings()
-    auth = MicrosoftAuthManager(
-        client_id=settings.microsoft.client_id,
-        tenant_id=settings.microsoft.tenant_id,
-        scopes=settings.microsoft.scopes,
-        token_cache_path=settings.microsoft.token_cache_path,
+    auth = GmailAuthManager(
+        credentials_path=settings.gmail.credentials_path,
+        token_path=settings.gmail.token_path,
+        scopes=settings.gmail.scopes,
     )
+    service = build("gmail", "v1", credentials=auth.get_credentials())
     return (
-        OutlookEmailReader(auth, settings.graph_base_url),
-        OutlookDraftCreator(auth, settings.graph_base_url),
+        GmailReader(service, user_id=settings.gmail.user_id),
+        GmailDraftCreator(service, user_id=settings.gmail.user_id),
         OpenAICompatibleClient(
             base_url=settings.llm.base_url,
             api_key=settings.llm.api_key,
@@ -62,60 +60,65 @@ def run() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-        handlers=[
-            logging.FileHandler(settings.log_file, encoding="utf-8"),
-            logging.StreamHandler(),
-        ],
+        handlers=[logging.FileHandler(settings.log_file, encoding="utf-8"), logging.StreamHandler()],
     )
-    st.set_page_config(page_title="AI Email Workflow", layout="wide")
-    st.title("AI-Assisted Email Drafting (Outlook)")
+
+    st.set_page_config(page_title="Gmail AI Email Assistant", layout="wide")
+    st.title("Gmail AI Email Assistant")
+    st.caption("Draft-only mode: emails are never auto-sent.")
 
     reader, draft_creator, llm_client, prompt_loader, sqlite_manager = init_services()
 
     with st.sidebar:
         st.header("Filters")
-        only_unread = st.checkbox("Only unread", value=settings.filters.only_unread)
+        only_unread = st.checkbox("Unread only", value=settings.filters.only_unread)
         use_after_date = st.checkbox("Enable after-date filter", value=settings.filters.after_date is not None)
         after_date = st.date_input(
             "After date",
             value=settings.filters.after_date.date() if settings.filters.after_date else datetime.utcnow().date(),
         )
-        keyword_input = st.text_input("Keywords (comma-separated)", value=",".join(settings.filters.keywords))
-        whitelist_input = st.text_input(
-            "Sender whitelist (comma-separated emails)",
-            value=",".join(settings.filters.sender_whitelist),
+        sender_filter = st.text_input("Sender filter (email/domain)", value=settings.filters.sender_filter)
+        exclude_promotions = st.checkbox("Exclude promotions/social", value=settings.filters.exclude_promotions)
+        exclude_noreply = st.checkbox("Exclude noreply/automated", value=settings.filters.exclude_noreply)
+        max_count = st.slider(
+            "Max emails",
+            min_value=1,
+            max_value=20,
+            value=min(max(1, settings.filters.max_emails), 20),
         )
-        blacklist_input = st.text_input(
-            "Sender blacklist (comma-separated emails)",
-            value=",".join(settings.filters.sender_blacklist),
+        tone = st.selectbox(
+            "Reply tone",
+            options=TONE_OPTIONS,
+            index=TONE_OPTIONS.index(settings.llm.default_tone) if settings.llm.default_tone in TONE_OPTIONS else 0,
         )
-        exclude_newsletters = st.checkbox("Exclude newsletters", value=settings.filters.exclude_newsletters)
-        exclude_automated = st.checkbox("Exclude automated emails", value=settings.filters.exclude_automated)
-        tone = st.selectbox("Reply tone", options=TONE_OPTIONS, index=TONE_OPTIONS.index(settings.llm.default_tone) if settings.llm.default_tone in TONE_OPTIONS else 0)
         language = st.text_input("Reply language", value=settings.llm.default_language)
-        max_count = st.slider("Max emails", min_value=1, max_value=100, value=settings.process_limit)
 
-    filters = EmailFilterConfig.from_parts(
+    read_config = GmailReadConfig(
         only_unread=only_unread,
+        max_emails=max_count,
         after_date=datetime.combine(after_date, datetime.min.time()).astimezone() if use_after_date else None,
-        sender_whitelist=[item.strip() for item in whitelist_input.split(",") if item.strip()],
-        sender_blacklist=[item.strip() for item in blacklist_input.split(",") if item.strip()],
-        keywords=[item.strip().lower() for item in keyword_input.split(",") if item.strip()],
-        exclude_newsletters=exclude_newsletters,
-        exclude_automated=exclude_automated,
+        sender_filter=sender_filter.strip() or None,
+        exclude_promotions=exclude_promotions,
+        exclude_noreply=exclude_noreply,
     )
 
-    if st.button("Load emails", type="primary"):
-        emails = reader.fetch_inbox_messages(filters, limit=max_count)
+    if st.button("Load Gmail emails", type="primary"):
+        emails = reader.list_latest_unread(read_config)
         st.session_state["emails"] = emails
 
     emails = st.session_state.get("emails", [])
-    st.subheader(f"Inbox candidates ({len(emails)})")
+    st.subheader(f"Gmail candidates ({len(emails)})")
     for email in emails:
         with st.expander(f"{email.subject} — {email.sender_email}"):
-            clean_body = clean_email_body(
-                email.body_content, is_html=email.body_content_type.lower() == "html"
-            )
+            already_seen, dedup_reason = sqlite_manager.already_processed_gmail(email.id, email.thread_id)
+            replyable, reply_reason = reader.evaluate_replyability(email, exclude_noreply=exclude_noreply)
+            clean_body = clean_email_body(email.body_text or email.snippet, is_html=False)
+
+            st.markdown(f"**Snippet:** {email.snippet}")
+            st.markdown(f"**Dedup:** {'skip' if already_seen else 'new'} ({dedup_reason or 'n/a'})")
+            st.markdown(f"**Replyability:** {'eligible' if replyable else 'excluded'} ({reply_reason})")
+            if email.has_attachments:
+                st.markdown("**Attachments:** detected and acknowledged (content is not read).")
             st.write(clean_body[:2000] + ("..." if len(clean_body) > 2000 else ""))
 
             if st.button(f"Analyze {email.id}", key=f"analyze-{email.id}"):
@@ -159,7 +162,7 @@ def run() -> None:
 
             result = st.session_state.get(f"result-{email.id}")
             if result:
-                st.markdown("**Summary**")
+                st.markdown("**AI Summary**")
                 st.write(result["summary"])
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Intent", result["intent"])
@@ -167,31 +170,36 @@ def run() -> None:
                 col3.metric("Confidence", f"{result['confidence']:.2f}")
                 edited_draft = st.text_area("Draft reply", value=result["draft"], key=f"draft-{email.id}", height=220)
 
-                action_col1, action_col2 = st.columns(2)
-                if action_col1.button(f"Approve & create draft {email.id}", key=f"approve-{email.id}"):
+                can_create = not already_seen and replyable
+                if st.button(f"Create Gmail draft {email.id}", key=f"approve-{email.id}", disabled=not can_create):
                     draft_result = draft_creator.create_draft(email, edited_draft)
-                    sqlite_manager.save_processed_email(
-                        ProcessedEmailRecord(
+                    now = sqlite_manager.now_iso()
+                    sqlite_manager.save_gmail_processed_email(
+                        GmailProcessedEmailRecord(
                             message_id=email.id,
+                            thread_id=email.thread_id,
                             subject=email.subject,
                             sender=email.sender_email,
                             received_at=email.received_at.isoformat(),
+                            snippet=email.snippet,
+                            processed_status="processed",
+                            draft_created=True,
+                            draft_id=draft_result.draft_id,
+                            skip_reason=None,
                             summary=result["summary"],
                             intent_label=result["intent"],
                             urgency_score=result["urgency"],
-                            draft_text=edited_draft,
                             confidence_score=float(result["confidence"]),
-                            draft_id=draft_result.draft_id,
-                            created_at=sqlite_manager.now_iso(),
+                            draft_text=edited_draft,
+                            created_at=now,
+                            updated_at=now,
                         )
                     )
-                    st.success(f"Draft created: {draft_result.draft_id}")
-
-                if action_col2.button(f"Reject {email.id}", key=f"reject-{email.id}"):
-                    st.warning("Rejected. No draft created.")
+                    st.success(f"Gmail draft created: {draft_result.draft_id}")
 
     render_logs(str(settings.log_file))
 
 
 if __name__ == "__main__":
     run()
+

@@ -1,6 +1,4 @@
-# Optional Gmail Support Setup
-
-Gmail is optional and not required for the current Outlook-first implementation.
+# Gmail Setup
 
 ## 1. Create project in Google Cloud
 1. Go to https://console.cloud.google.com
@@ -28,13 +26,20 @@ Gmail is optional and not required for the current Outlook-first implementation.
 3. Download `credentials.json`.
 
 ## 5. Local token generation
-Use Google OAuth flow (installed app) to get and persist token cache locally.
+Use the built-in auth flow (`app/auth/gmail_auth.py`) to get and persist local token state.
+The workflow reuses `token.json` and refreshes automatically when possible.
 
-## 6. Recommended provider abstraction
-Add Gmail support by implementing:
-- `app/auth/google_auth.py`
-- `app/email/gmail_read_emails.py`
-- `app/email/gmail_create_draft.py`
+## 6. Credential placement
+Place your OAuth client file at:
+- `credentials/credentials.json`
 
-Keep the same interfaces used by Outlook modules to avoid UI/business logic changes.
+Token is persisted at:
+- `token.json`
 
+## 7. Run
+
+```bash
+python -m app.gmail_cli --max-emails 5
+```
+
+Drafts are created only in Gmail Drafts. No email is auto-sent.
