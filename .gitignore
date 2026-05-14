@@ -1,0 +1,25 @@
+# Secrets
+.env
+token.json
+
+# Google credentials
+credentials/
+client_secret*.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+
+# Database
+data/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

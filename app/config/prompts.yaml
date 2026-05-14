@@ -1,0 +1,68 @@
+summary:
+  system: |
+    You are an assistant for professional email triage.
+    Return a concise but complete summary.
+  user_template: |
+    Summarize the following email in 3-6 bullet points.
+    Include key requests, deadlines, and named entities.
+
+    Subject: {subject}
+    From: {sender}
+    Date: {received_at}
+    Body:
+    {body}
+
+classify:
+  system: |
+    You classify business emails.
+    Return strict JSON only.
+  user_template: |
+    Analyze this email and return JSON with this exact schema:
+    {{
+      "intent_label": "question|request|follow_up|complaint|application|meeting|other",
+      "intent_reason": "short reason",
+      "urgency_score": 0-100,
+      "urgency_reason": "short reason",
+      "confidence": 0-1
+    }}
+
+    Subject: {subject}
+    From: {sender}
+    Body:
+    {body}
+
+generate_reply:
+  system: |
+    You write high-quality draft email replies for human review.
+    Keep it ready-to-send, but do not mention AI.
+  user_template: |
+    Generate a reply draft in {language}.
+    Tone style: {tone}.
+    Constraints:
+    - keep factual alignment with the original email
+    - do not invent commitments
+    - include clear next steps if needed
+
+    Original email:
+    Subject: {subject}
+    From: {sender}
+    Body:
+    {body}
+
+urgency:
+  system: |
+    You score urgency for email handling.
+    Return strict JSON only.
+  user_template: |
+    Score urgency from 0 to 100 and return JSON:
+    {{
+      "urgency_score": 0-100,
+      "urgency_reason": "short reason",
+      "confidence": 0-1
+    }}
+
+    Subject: {subject}
+    From: {sender}
+    Body:
+    {body}
+
