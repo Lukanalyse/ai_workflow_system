@@ -2,15 +2,16 @@
 
 ## Batch mode (`app/gmail_cli.py`)
 1. Load `.env` settings.
-2. Authenticate to Gmail.
-3. Fetch latest unread Gmail messages.
-4. For each unprocessed message:
+2. Validate startup config and local files.
+3. Authenticate to Gmail.
+4. Fetch latest unread Gmail messages.
+5. For each unprocessed message:
    - run replyability filters (newsletter/automation/noreply/promotions),
    - clean content,
    - summarize,
    - classify intent + urgency + confidence,
    - generate reply text,
-   - create Gmail draft,
+   - create Gmail draft only when `--create-drafts` is explicitly passed,
    - store in SQLite.
 
 ## UI mode (`app/ui/streamlit_app.py`)

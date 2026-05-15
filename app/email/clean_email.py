@@ -33,3 +33,24 @@ def clean_email_body(raw_content: str, *, is_html: bool) -> str:
     text = strip_signature(text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
+
+def prepare_untrusted_email_for_llm(
+    raw_content: str,
+    *,
+    is_html: bool,
+    max_chars: int,
+    attachment_names: list[str] | None = None,
+) -> str:
+    cleaned = clean_email_body(raw_content, is_html=is_html)
+    clipped = cleaned[: max(1, max_chars)].strip()
+    attachment_note = (
+        "Attachments detected (metadata only, content unavailable): " + ", ".join(attachment_names)
+        if attachment_names
+        else "No attachment content available."
+    )
+    return (
+        "UNTRUSTED_EMAIL_START\n"
+        f"{clipped}\n"
+        "UNTRUSTED_EMAIL_END\n"
+        f"{attachment_note}"
+    )

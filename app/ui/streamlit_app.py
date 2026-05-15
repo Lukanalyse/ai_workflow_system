@@ -4,12 +4,11 @@ import logging
 from datetime import datetime
 
 import streamlit as st
-from googleapiclient.discovery import build
 
 from app.auth.gmail_auth import GmailAuthManager
 from app.config.settings import get_settings
 from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
-from app.email.clean_email import clean_email_body
+from app.email.clean_email import clean_email_body, prepare_untrusted_email_for_llm
 from app.email.gmail_draft_creator import GmailDraftCreator
 from app.email.gmail_reader import GmailReadConfig, GmailReader
 from app.llm.classify import classify_email
@@ -17,6 +16,7 @@ from app.llm.generate_reply import generate_reply_draft
 from app.llm.llm_client import OpenAICompatibleClient
 from app.llm.prompt_loader import PromptLoader
 from app.llm.summarize import summarize_email
+from app.security.startup_checks import sanitize_persisted_fields, validate_and_prepare_runtime
 
 logger = logging.getLogger(__name__)
 TONE_OPTIONS = ["formal", "academic", "concise", "friendly", "recruiter", "research"]
@@ -24,6 +24,12 @@ TONE_OPTIONS = ["formal", "academic", "concise", "friendly", "recruiter", "resea
 
 @st.cache_resource
 def init_services() -> tuple[GmailReader, GmailDraftCreator, OpenAICompatibleClient, PromptLoader, SQLiteManager]:
+    try:
+        from googleapiclient.discovery import build
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
+        ) from exc
     settings = get_settings()
     auth = GmailAuthManager(
         credentials_path=settings.gmail.credentials_path,
@@ -56,6 +62,15 @@ def render_logs(log_file: str) -> None:
 
 def run() -> None:
     settings = get_settings()
+    errors, warnings = validate_and_prepare_runtime(settings)
+    if errors:
+        st.error("Startup validation failed:")
+        for error in errors:
+            st.write(f"- {error}")
+        st.stop()
+    for warning in warnings:
+        st.warning(warning)
+
     settings.log_file.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -83,8 +98,8 @@ def run() -> None:
         max_count = st.slider(
             "Max emails",
             min_value=1,
-            max_value=20,
-            value=min(max(1, settings.filters.max_emails), 20),
+            max_value=50,
+            value=min(max(1, settings.filters.max_emails), 50),
         )
         tone = st.selectbox(
             "Reply tone",
@@ -113,6 +128,12 @@ def run() -> None:
             already_seen, dedup_reason = sqlite_manager.already_processed_gmail(email.id, email.thread_id)
             replyable, reply_reason = reader.evaluate_replyability(email, exclude_noreply=exclude_noreply)
             clean_body = clean_email_body(email.body_text or email.snippet, is_html=False)
+            llm_input = prepare_untrusted_email_for_llm(
+                email.body_text or email.snippet,
+                is_html=False,
+                max_chars=settings.llm.max_input_chars,
+                attachment_names=email.attachment_names,
+            )
 
             st.markdown(f"**Snippet:** {email.snippet}")
             st.markdown(f"**Dedup:** {'skip' if already_seen else 'new'} ({dedup_reason or 'n/a'})")
@@ -128,7 +149,7 @@ def run() -> None:
                     subject=email.subject,
                     sender=email.sender_email,
                     received_at=email.received_at.isoformat(),
-                    body=clean_body,
+                    body=llm_input,
                     temperature=settings.llm.temperature,
                     max_tokens=settings.llm.max_tokens,
                 )
@@ -137,7 +158,7 @@ def run() -> None:
                     prompt_loader,
                     subject=email.subject,
                     sender=email.sender_email,
-                    body=clean_body,
+                    body=llm_input,
                     temperature=settings.llm.temperature,
                     max_tokens=settings.llm.max_tokens,
                 )
@@ -146,7 +167,7 @@ def run() -> None:
                     prompt_loader,
                     subject=email.subject,
                     sender=email.sender_email,
-                    body=clean_body,
+                    body=llm_input,
                     tone=tone,
                     language=language,
                     temperature=settings.llm.temperature,
@@ -174,6 +195,12 @@ def run() -> None:
                 if st.button(f"Create Gmail draft {email.id}", key=f"approve-{email.id}", disabled=not can_create):
                     draft_result = draft_creator.create_draft(email, edited_draft)
                     now = sqlite_manager.now_iso()
+                    snippet_db, summary_db, draft_db = sanitize_persisted_fields(
+                        snippet=email.snippet,
+                        summary=result["summary"],
+                        draft_text=edited_draft,
+                        settings=settings,
+                    )
                     sqlite_manager.save_gmail_processed_email(
                         GmailProcessedEmailRecord(
                             message_id=email.id,
@@ -181,16 +208,16 @@ def run() -> None:
                             subject=email.subject,
                             sender=email.sender_email,
                             received_at=email.received_at.isoformat(),
-                            snippet=email.snippet,
+                            snippet=snippet_db,
                             processed_status="processed",
                             draft_created=True,
                             draft_id=draft_result.draft_id,
                             skip_reason=None,
-                            summary=result["summary"],
+                            summary=summary_db,
                             intent_label=result["intent"],
                             urgency_score=result["urgency"],
                             confidence_score=float(result["confidence"]),
-                            draft_text=edited_draft,
+                            draft_text=draft_db,
                             created_at=now,
                             updated_at=now,
                         )
@@ -202,4 +229,3 @@ def run() -> None:
 
 if __name__ == "__main__":
     run()
-

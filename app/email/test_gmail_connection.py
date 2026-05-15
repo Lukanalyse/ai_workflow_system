@@ -2,90 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import pickle
-from datetime import datetime
-from typing import Any
 
-from dotenv import load_dotenv
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from app.auth.gmail_auth import GmailAuthManager
+from app.config.settings import get_settings
+from app.security.startup_checks import validate_and_prepare_runtime
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/gmail.compose",
-]
-
-from pathlib import Path
-
-BASE_DIR = Path(__file__).resolve().parents[2]
-
-TOKEN_PATH = BASE_DIR / "token.json"
-CREDS_PATH = BASE_DIR / "credentials" / "credentials.json"
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Test Gmail API connection and list emails.")
-
-    parser.add_argument("--max-results", type=int, default=5)
-    parser.add_argument("--only-unread", action="store_true")
-    parser.add_argument("--sender", default="")
-    parser.add_argument("--keyword", default="")
-    parser.add_argument("--after-date", default="")
-
+    parser = argparse.ArgumentParser(description="Validate Gmail OAuth and list message metadata.")
+    parser.add_argument("--max-results", type=int, default=5, help="Max messages to list")
+    parser.add_argument("--query", default="in:inbox -in:spam -in:trash", help="Gmail query")
     return parser.parse_args()
 
 
-def build_query(args: argparse.Namespace) -> str:
-    query_parts = []
-
-    if args.only_unread:
-        query_parts.append("is:unread")
-
-    if args.sender:
-        query_parts.append(f"from:{args.sender}")
-
-    if args.keyword:
-        query_parts.append(args.keyword)
-
-    if args.after_date:
-        parsed = datetime.strptime(args.after_date, "%Y-%m-%d")
-        query_parts.append(f"after:{parsed.strftime('%Y/%m/%d')}")
-
-    return " ".join(query_parts)
-
-
-def authenticate_gmail():
-    creds = None
-
-    if os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, "rb") as token:
-            creds = pickle.load(token)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDS_PATH,
-                SCOPES
-            )
-            creds = flow.run_local_server(port=0)
-
-        with open(TOKEN_PATH, "wb") as token:
-            pickle.dump(creds, token)
-
-    return creds
-
-
-def extract_headers(headers):
-    lookup = {
-        h["name"].lower(): h["value"]
-        for h in headers
-    }
-
+def extract_headers(headers: list[dict[str, str]]) -> dict[str, str]:
+    lookup = {h.get("name", "").lower(): h.get("value", "") for h in headers}
     return {
         "from": lookup.get("from", ""),
         "subject": lookup.get("subject", ""),
@@ -93,47 +24,52 @@ def extract_headers(headers):
     }
 
 
-def main():
-    load_dotenv()
-
+def main() -> None:
     args = parse_args()
+    try:
+        from googleapiclient.discovery import build
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
+        ) from exc
 
-    query = build_query(args)
+    settings = get_settings()
+    errors, _warnings = validate_and_prepare_runtime(settings)
+    if errors:
+        raise RuntimeError("Startup validation failed:\n- " + "\n- ".join(errors))
 
-    creds = authenticate_gmail()
-
-    service = build("gmail", "v1", credentials=creds)
-
-    results = service.users().messages().list(
-        userId="me",
-        maxResults=args.max_results,
-        q=query
-    ).execute()
-
-    messages = results.get("messages", [])
-
-    print(f"\nFetched {len(messages)} emails.\n")
+    auth = GmailAuthManager(
+        credentials_path=settings.gmail.credentials_path,
+        token_path=settings.gmail.token_path,
+        scopes=settings.gmail.scopes,
+    )
+    service = build("gmail", "v1", credentials=auth.get_credentials())
+    result = (
+        service.users()
+        .messages()
+        .list(userId=settings.gmail.user_id, maxResults=max(1, min(args.max_results, 20)), q=args.query)
+        .execute()
+    )
+    messages = result.get("messages", [])
+    print(f"Fetched {len(messages)} messages.")
 
     for idx, msg in enumerate(messages, start=1):
-        detail = service.users().messages().get(
-            userId="me",
-            id=msg["id"],
-            format="metadata"
-        ).execute()
-
-        headers = extract_headers(
-            detail["payload"]["headers"]
+        detail = (
+            service.users()
+            .messages()
+            .get(userId=settings.gmail.user_id, id=msg["id"], format="metadata")
+            .execute()
         )
-
+        headers = extract_headers(detail.get("payload", {}).get("headers", []))
         row = {
             "index": idx,
+            "message_id": detail.get("id"),
+            "thread_id": detail.get("threadId"),
             "subject": headers["subject"],
             "from": headers["from"],
             "date": headers["date"],
-            "snippet": detail.get("snippet", ""),
         }
-
-        print(json.dumps(row, indent=2, ensure_ascii=False))
+        print(json.dumps(row, ensure_ascii=False))
 
 
 if __name__ == "__main__":

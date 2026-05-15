@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
@@ -27,10 +27,14 @@ class LLMSettings(BaseModel):
     max_tokens: int = 700
     default_tone: str = "formal"
     default_language: str = "en"
+    max_input_chars: int = 12000
 
 
 class DatabaseSettings(BaseModel):
     sqlite_path: Path = Path("data/email_workflow.db")
+    persist_snippet: bool = False
+    persist_ai_outputs: bool = False
+    max_persisted_chars: int = 500
 
 
 class GmailSettings(BaseModel):
@@ -40,7 +44,6 @@ class GmailSettings(BaseModel):
     scopes: list[str] = Field(
         default_factory=lambda: [
             "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.compose",
         ]
     )
@@ -56,7 +59,15 @@ class AppSettings(BaseSettings):
     prompt_file: Path = Path("app/config/prompts.yaml")
     log_file: Path = Path("logs/app.log")
     process_limit: int = 20
+    create_drafts_default: bool = True
 
 
 def get_settings() -> AppSettings:
-    return AppSettings()
+    try:
+        return AppSettings()
+    except ValidationError as exc:
+        lines = ["Invalid configuration in .env:"]
+        for err in exc.errors():
+            key = ".".join(str(part) for part in err.get("loc", []))
+            lines.append(f"- {key}: {err.get('msg', 'invalid value')}")
+        raise RuntimeError("\n".join(lines)) from exc

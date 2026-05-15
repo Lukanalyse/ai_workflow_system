@@ -27,6 +27,9 @@ This project implements an AI-assisted email workflow with a strict **draft-only
 - `prompt_loader.py`: external prompt loading from YAML.
 - `summarize.py`, `classify.py`, `generate_reply.py`: modular LLM tasks.
 
+### `app/security`
+- `startup_checks.py`: startup validation, local file permission hardening, and persistence minimization helpers.
+
 ### `app/database`
 - `sqlite_manager.py`: persistence for processed emails, drafts, confidence, and timestamps.
 

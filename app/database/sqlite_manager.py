@@ -157,7 +157,10 @@ class SQLiteManager:
                 (message_id,),
             ).fetchone()
             if message_row is not None:
-                return True, "message_already_seen"
+                status = str(message_row["processed_status"])
+                draft_created = bool(message_row["draft_created"])
+                if draft_created or status in {"processed", "skipped"}:
+                    return True, "message_already_seen"
 
             thread_row = conn.execute(
                 """

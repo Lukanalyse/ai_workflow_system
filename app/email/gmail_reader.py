@@ -95,12 +95,20 @@ class GmailReader:
     def _decode_part_data(data: str) -> str:
         if not data:
             return ""
-        missing_padding = (-len(data)) % 4
-        raw = base64.urlsafe_b64decode(data + ("=" * missing_padding))
-        return raw.decode("utf-8", errors="replace")
+        try:
+            missing_padding = (-len(data)) % 4
+            raw = base64.urlsafe_b64decode(data + ("=" * missing_padding))
+            return raw.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
 
     def _extract_body(self, payload: dict) -> tuple[str, bool]:
         mime_type = payload.get("mimeType", "")
+        filename = str(payload.get("filename", "")).strip()
+        attachment_id = (payload.get("body", {}) or {}).get("attachmentId")
+        # Never parse attachment parts into LLM input, even if they contain text/* mime types.
+        if filename or attachment_id:
+            return "", False
         body_data = payload.get("body", {}).get("data", "")
         if mime_type == "text/plain" and body_data:
             return self._decode_part_data(body_data), False
@@ -162,7 +170,7 @@ class GmailReader:
         )
 
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:
-        hard_limit = max(1, min(config.max_emails, 20))
+        hard_limit = max(1, min(config.max_emails, 50))
         query = self._build_query(config)
         logger.info("Fetching latest Gmail unread messages: limit=%s query=%s", hard_limit, query)
         rows = (

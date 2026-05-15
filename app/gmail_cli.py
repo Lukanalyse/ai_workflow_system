@@ -4,12 +4,10 @@ import argparse
 import logging
 from datetime import datetime, timezone
 
-from googleapiclient.discovery import build
-
 from app.auth.gmail_auth import GmailAuthManager
 from app.config.settings import AppSettings, get_settings
 from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
-from app.email.clean_email import clean_email_body
+from app.email.clean_email import prepare_untrusted_email_for_llm
 from app.email.gmail_draft_creator import GmailDraftCreator
 from app.email.gmail_reader import GmailReadConfig, GmailReader
 from app.llm.classify import classify_email
@@ -17,6 +15,7 @@ from app.llm.generate_reply import generate_reply_draft
 from app.llm.llm_client import OpenAICompatibleClient
 from app.llm.prompt_loader import PromptLoader
 from app.llm.summarize import summarize_email
+from app.security.startup_checks import sanitize_persisted_fields, validate_and_prepare_runtime
 
 logger = logging.getLogger(__name__)
 SUPPORTED_TONES = {"formal", "academic", "concise", "friendly", "recruiter", "research"}
@@ -28,10 +27,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--after-date", default="", help="Filter emails after date (YYYY-MM-DD)")
     parser.add_argument("--sender", default="", help="Filter sender address/domain")
     parser.add_argument(
+        "--create-drafts",
+        action="store_true",
+        help="Force-enable Gmail draft creation for this run.",
+    )
+    parser.add_argument(
         "--no-drafts",
         action="store_true",
-        help="Generate analysis and draft text but do not create Gmail drafts",
+        help="Disable draft creation for this run (analyze-only mode).",
     )
+    parser.add_argument("--validate-config", action="store_true", help="Validate local setup and exit")
     parser.add_argument("--tone", default="", help="Override tone")
     parser.add_argument("--language", default="", help="Override language")
     return parser.parse_args()
@@ -49,13 +54,42 @@ def _configure_logging(settings: AppSettings) -> None:
 def _parse_after_date(value: str) -> datetime | None:
     if not value:
         return None
-    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError("Invalid --after-date. Expected format: YYYY-MM-DD") from exc
 
 
 def main() -> None:
     args = _parse_args()
     settings = get_settings()
     _configure_logging(settings)
+    try:
+        from googleapiclient.discovery import build
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
+        ) from exc
+    errors, warnings = validate_and_prepare_runtime(settings)
+    for warning in warnings:
+        logger.warning(warning)
+    if errors:
+        raise RuntimeError("Startup validation failed:\n- " + "\n- ".join(errors))
+    if args.create_drafts and args.no_drafts:
+        raise ValueError("Use either --create-drafts or --no-drafts, not both.")
+    should_create_drafts = settings.create_drafts_default
+    if args.create_drafts:
+        should_create_drafts = True
+    if args.no_drafts:
+        should_create_drafts = False
+
+    logger.info(
+        "Startup mode: %s",
+        "create_drafts" if should_create_drafts else "analyze_only (no draft creation)",
+    )
+    if args.validate_config:
+        logger.info("Configuration validation successful.")
+        return
     sqlite = SQLiteManager(settings.database.sqlite_path)
 
     auth = GmailAuthManager(
@@ -88,12 +122,17 @@ def main() -> None:
     if tone not in SUPPORTED_TONES:
         tone = "formal"
     language = args.language.strip() or settings.llm.default_language
-    now = sqlite.now_iso()
-
     for message in messages:
+        now = sqlite.now_iso()
         already_processed, dedup_reason = sqlite.already_processed_gmail(message.id, message.thread_id)
         if already_processed:
             logger.info("Skipping message_id=%s reason=%s", message.id, dedup_reason)
+            snippet, summary, draft_text = sanitize_persisted_fields(
+                snippet=message.snippet,
+                summary=None,
+                draft_text=None,
+                settings=settings,
+            )
             sqlite.save_gmail_processed_email(
                 GmailProcessedEmailRecord(
                     message_id=message.id,
@@ -101,7 +140,7 @@ def main() -> None:
                     subject=message.subject,
                     sender=message.sender_email,
                     received_at=message.received_at.isoformat(),
-                    snippet=message.snippet,
+                    snippet=snippet,
                     processed_status="skipped",
                     draft_created=False,
                     draft_id=None,
@@ -120,6 +159,12 @@ def main() -> None:
         replyable, reason = reader.evaluate_replyability(message, exclude_noreply=True)
         if not replyable:
             logger.info("Skipping non-replyable message_id=%s reason=%s", message.id, reason)
+            snippet, summary, draft_text = sanitize_persisted_fields(
+                snippet=message.snippet,
+                summary=None,
+                draft_text=None,
+                settings=settings,
+            )
             sqlite.save_gmail_processed_email(
                 GmailProcessedEmailRecord(
                     message_id=message.id,
@@ -127,7 +172,7 @@ def main() -> None:
                     subject=message.subject,
                     sender=message.sender_email,
                     received_at=message.received_at.isoformat(),
-                    snippet=message.snippet,
+                    snippet=snippet,
                     processed_status="skipped",
                     draft_created=False,
                     draft_id=None,
@@ -143,7 +188,12 @@ def main() -> None:
             )
             continue
 
-        cleaned = clean_email_body(message.body_text or message.snippet, is_html=False)
+        llm_input = prepare_untrusted_email_for_llm(
+            message.body_text or message.snippet,
+            is_html=False,
+            max_chars=settings.llm.max_input_chars,
+            attachment_names=message.attachment_names,
+        )
         draft_id: str | None = None
         processed_status = "processed"
         skip_reason: str | None = None
@@ -159,7 +209,7 @@ def main() -> None:
                 subject=message.subject,
                 sender=message.sender_email,
                 received_at=message.received_at.isoformat(),
-                body=cleaned,
+                body=llm_input,
                 temperature=settings.llm.temperature,
                 max_tokens=settings.llm.max_tokens,
             )
@@ -168,7 +218,7 @@ def main() -> None:
                 prompt_loader,
                 subject=message.subject,
                 sender=message.sender_email,
-                body=cleaned,
+                body=llm_input,
                 temperature=settings.llm.temperature,
                 max_tokens=settings.llm.max_tokens,
             )
@@ -180,21 +230,29 @@ def main() -> None:
                 prompt_loader,
                 subject=message.subject,
                 sender=message.sender_email,
-                body=cleaned,
+                body=llm_input,
                 tone=tone,
                 language=language,
                 temperature=settings.llm.temperature,
                 max_tokens=settings.llm.max_tokens,
             )
-            if not args.no_drafts:
+            if should_create_drafts:
                 draft_result = draft_creator.create_draft(message, draft_text)
                 draft_id = draft_result.draft_id
+            else:
+                processed_status = "analyzed_only"
         except Exception:
             logger.exception("Failed processing Gmail message_id=%s", message.id)
             processed_status = "failed"
             skip_reason = "processing_exception"
 
         updated_at = sqlite.now_iso()
+        snippet_db, summary_db, draft_db = sanitize_persisted_fields(
+            snippet=message.snippet,
+            summary=summary,
+            draft_text=draft_text,
+            settings=settings,
+        )
         sqlite.save_gmail_processed_email(
             GmailProcessedEmailRecord(
                 message_id=message.id,
@@ -202,16 +260,16 @@ def main() -> None:
                 subject=message.subject,
                 sender=message.sender_email,
                 received_at=message.received_at.isoformat(),
-                snippet=message.snippet,
+                snippet=snippet_db,
                 processed_status=processed_status,
                 draft_created=bool(draft_id),
                 draft_id=draft_id,
                 skip_reason=skip_reason,
-                summary=summary,
+                summary=summary_db,
                 intent_label=intent_label,
                 urgency_score=urgency_score,
                 confidence_score=confidence,
-                draft_text=draft_text,
+                draft_text=draft_db,
                 created_at=now,
                 updated_at=updated_at,
             )
@@ -225,5 +283,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-
+    try:
+        main()
+    except Exception as exc:
+        raise SystemExit(f"Startup error: {exc}") from exc

@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 from pathlib import Path
-
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,33 +17,40 @@ class GmailAuthManager:
         self.scopes = scopes
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _load_credentials(self) -> Credentials | None:
+    def _load_credentials(self) -> Any | None:
         if not self.token_path.exists():
             return None
-        raw = self.token_path.read_bytes()
+        try:
+            raw = self.token_path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(
+                "token.json is in an unsupported binary format. Delete token.json and re-run OAuth login."
+            ) from exc
         if not raw:
             return None
         try:
-            # Existing local flow stores pickled Credentials in token.json.
-            creds = pickle.loads(raw)
-            if isinstance(creds, Credentials):
-                return creds
-        except Exception:
-            pass
-
-        try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = json.loads(raw)
             if isinstance(payload, dict):
+                from google.oauth2.credentials import Credentials
+
                 return Credentials.from_authorized_user_info(payload, self.scopes)
-        except Exception:
-            pass
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("token.json is invalid JSON. Delete token.json and re-run OAuth login.") from exc
         return None
 
-    def _save_credentials(self, creds: Credentials) -> None:
-        self.token_path.write_bytes(pickle.dumps(creds))
+    def _save_credentials(self, creds: Any) -> None:
+        self.token_path.write_text(creds.to_json(), encoding="utf-8")
         self.token_path.chmod(0o600)
 
-    def get_credentials(self) -> Credentials:
+    def get_credentials(self) -> Any:
+        from google.auth.transport.requests import Request
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        if not self.credentials_path.exists():
+            raise FileNotFoundError(
+                f"Gmail OAuth credentials file not found at {self.credentials_path}. "
+                "Add credentials/credentials.json from Google Cloud."
+            )
         creds = self._load_credentials()
         has_scopes = bool(creds and creds.has_scopes(self.scopes))
 
@@ -65,4 +68,3 @@ class GmailAuthManager:
         creds = flow.run_local_server(port=0)
         self._save_credentials(creds)
         return creds
-

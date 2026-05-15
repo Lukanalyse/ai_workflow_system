@@ -1,102 +1,108 @@
 # Gmail AI Email Assistant
 
-Production-oriented Gmail-native assistant that:
-- reads latest unread Gmail emails,
-- filters non-replyable/automated content,
-- generates AI reply drafts,
-- creates Gmail drafts only (never sends),
-- prevents duplicate processing with SQLite.
+Draft-only Gmail assistant with OpenAI-compatible analysis.
 
-## Safety policy
+## Security Model
 
-1. Drafts only: no auto-send action exists in the codebase.
-2. Human validation is required before sending from Gmail.
-3. Attachments are acknowledged only; attachment contents are not read.
+1. Draft creation only. No Gmail send endpoint is used.
+2. Attachment content is never downloaded or parsed (metadata only).
+3. Email body is treated as untrusted input for LLM prompts.
+4. Local secrets, tokens, DB, and logs are git-ignored by default.
+5. CLI default can create drafts (configurable), while `--no-drafts` forces analyze-only mode.
 
-## Architecture
+## What Must Never Be Committed
 
-```text
-app/
-├── auth/
-│   └── gmail_auth.py
-├── email/
-│   ├── gmail_reader.py
-│   ├── gmail_draft_creator.py
-│   ├── clean_email.py
-│   ├── filters.py
-│   ├── thread_parser.py
-│   └── attachment_detector.py
-├── llm/
-├── database/
-├── config/
-├── ui/
-└── gmail_cli.py
-```
+- `.env` (real API keys)
+- `token.json` (OAuth access/refresh tokens)
+- `credentials/credentials.json` (Google OAuth client secret)
+- `data/*.db` (email-derived local state)
+- `logs/*.log` (runtime traces)
 
-## Setup
+## Quick Start (Portable)
 
-### 1. Install
+1. Install Python `3.11+`.
+2. Create virtual env and install deps:
+   - `python -m venv .venv`
+   - `source .venv/bin/activate` (Windows PowerShell: `.\.venv\Scripts\Activate.ps1`)
+   - `pip install -r requirements.txt`
+3. Copy config template:
+   - `cp .env_EXAMPLE .env`
+4. Set at least:
+   - `LLM__API_KEY=...`
+5. Put Gmail OAuth Desktop app file at:
+   - `credentials/credentials.json`
+6. Run the guided setup wizard:
+   - `python onboarding_setup.py`
+
+## Validate Setup
+
+Run validation only (no email processing):
 
 ```bash
-pip install -r requirements.txt
+python -m app.gmail_cli --validate-config
 ```
 
-### 2. Configure Gmail OAuth
+This checks required config, files, and minimal runtime setup.
 
-1. Create a Google Cloud project.
-2. Enable Gmail API.
-3. Configure OAuth consent screen.
-4. Create Desktop OAuth credentials.
-5. Save credentials file to:
-   - `credentials/credentials.json`
+## Guided Onboarding Wizard
 
-Required scopes:
-- `https://www.googleapis.com/auth/gmail.readonly`
-- `https://www.googleapis.com/auth/gmail.modify`
-- `https://www.googleapis.com/auth/gmail.compose`
+Run:
 
-### 3. Configure environment
+```bash
+python onboarding_setup.py
+```
 
-1. Copy `.env_EXAMPLE` to `.env`.
-2. Set at least:
-   - `LLM__API_KEY`
+The wizard performs:
+1. environment checks (Python, dependencies, required folders),
+2. beginner-friendly Gmail OAuth instructions,
+3. interactive LLM/API key setup,
+4. draft default choice (enabled/disabled),
+5. safe `.env` creation/update,
+6. automatic `--validate-config` execution.
 
 ## Run
 
-### Gmail CLI
+Analyze only (no draft creation):
 
 ```bash
-python -m app.gmail_cli
+python -m app.gmail_cli --max-emails 5 --no-drafts
 ```
 
-Run on latest 5 unread:
+Create Gmail drafts:
 
 ```bash
 python -m app.gmail_cli --max-emails 5
 ```
 
-Dry run (no draft creation):
-
-```bash
-python -m app.gmail_cli --no-drafts
-```
-
-### Streamlit
+Streamlit manual review UI:
 
 ```bash
 streamlit run app/ui/streamlit_app.py
 ```
 
-## Deduplication behavior
+## Gmail OAuth Scopes (Least Privilege)
 
-SQLite table `gmail_processed_emails` prevents duplicates by:
-1. `message_id` uniqueness,
-2. skipping new messages in threads where a draft was already created.
+- `https://www.googleapis.com/auth/gmail.readonly`
+- `https://www.googleapis.com/auth/gmail.compose`
 
-Skip reasons and processing state are persisted for auditability.
+`gmail.modify` is intentionally excluded by default.
 
-## Attachment handling
+## Persistence Defaults
 
-Attachments are detected from Gmail metadata (filename + attachment id only).
-Attachment bytes/content are never downloaded or parsed.
+To reduce local privacy risk, DB persistence is minimal by default:
 
+- `DATABASE__PERSIST_SNIPPET=false`
+- `DATABASE__PERSIST_AI_OUTPUTS=false`
+
+You can opt in to store snippets/AI outputs in `.env` for debugging.
+
+## Sharing Checklist
+
+Before sharing publicly or with colleagues:
+
+1. Ensure `.env`, `token.json`, `credentials/`, `data/`, and `logs/` are absent from commits.
+2. Rotate API keys if there is any doubt.
+3. Remove local runtime artifacts:
+   - `rm -f token.json`
+   - `rm -rf data logs`
+4. Share `.env_EXAMPLE`, never real `.env`.
