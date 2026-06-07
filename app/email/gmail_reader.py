@@ -169,8 +169,17 @@ class GmailReader:
             attachment_names=attachment_meta.filenames,
         )
 
+    def get_message(self, message_id: str) -> GmailMessage:
+        detail = (
+            self.service.users()
+            .messages()
+            .get(userId=self.user_id, id=message_id, format="full")
+            .execute()
+        )
+        return self._parse_message(detail)
+
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:
-        hard_limit = max(1, min(config.max_emails, 50))
+        hard_limit = max(1, min(config.max_emails, 100))
         query = self._build_query(config)
         logger.info("Fetching latest Gmail unread messages: limit=%s query=%s", hard_limit, query)
         rows = (

@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # Where Google returns the user after consent. Change only if you serve
+      # the app on a different host/port than http://localhost:3000.
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-http://localhost:3000/api/gmail/callback}
+    volumes:
+      # Config & secrets are mounted (not baked into the image) so the
+      # Settings page can edit .env live and store the OAuth client/token.
+      - ./.env:/app/.env
+      - ./credentials:/app/credentials
+      # Gmail OAuth is now done from the web UI; tokens persist here and
+      # survive container restarts. No host-side `python login.py` needed.
+      - ./storage:/app/storage
+      # Persisted local state.
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped

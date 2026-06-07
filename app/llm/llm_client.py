@@ -6,6 +6,8 @@ from typing import Any
 
 import httpx
 
+from app.llm.base import LLMClient, LLMResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,13 +18,41 @@ class LLMResponse:
     raw: dict[str, Any]
 
 
-class OpenAICompatibleClient:
+class OpenAICompatibleClient(LLMClient):
     """Minimal client for OpenAI-compatible Chat Completions APIs."""
 
-    def __init__(self, *, base_url: str, api_key: str, model: str) -> None:
+    provider = "openai"
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        temperature: float = 0.2,
+        provider: str = "openai",
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.temperature = temperature
+        self.provider = provider
+
+    def complete(self, *, system_prompt: str, user_prompt: str, max_tokens: int) -> LLMResult:
+        response = self.chat_completion(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=self.temperature,
+            max_tokens=max_tokens,
+        )
+        usage = response.raw.get("usage", {}) or {}
+        return LLMResult(
+            text=response.content,
+            input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+            output_tokens=int(usage.get("completion_tokens", 0) or 0),
+            model=response.model,
+            provider=self.provider,
+        )
 
     def chat_completion(
         self,

@@ -16,9 +16,21 @@ dependencies = [
   "pydantic-settings>=2.3.0",
   "python-dotenv>=1.0.1",
   "PyYAML>=6.0.2",
+  "anthropic>=0.40.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
   "streamlit>=1.38.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

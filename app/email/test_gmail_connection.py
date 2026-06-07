@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from app.auth.gmail_auth import GmailAuthManager
+from app.auth.gmail_auth import build_auth_manager
 from app.config.settings import get_settings
 from app.security.startup_checks import validate_and_prepare_runtime
 
@@ -38,11 +38,7 @@ def main() -> None:
     if errors:
         raise RuntimeError("Startup validation failed:\n- " + "\n- ".join(errors))
 
-    auth = GmailAuthManager(
-        credentials_path=settings.gmail.credentials_path,
-        token_path=settings.gmail.token_path,
-        scopes=settings.gmail.scopes,
-    )
+    auth = build_auth_manager(settings)
     service = build("gmail", "v1", credentials=auth.get_credentials())
     result = (
         service.users()
