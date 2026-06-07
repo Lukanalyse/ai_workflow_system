@@ -5,7 +5,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from app.auth.gmail_auth import GmailAuthManager
+from app.auth.gmail_auth import build_auth_manager
 from app.config.settings import get_settings
 from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
 from app.email.clean_email import clean_email_body, prepare_untrusted_email_for_llm
@@ -31,11 +31,7 @@ def init_services() -> tuple[GmailReader, GmailDraftCreator, OpenAICompatibleCli
             "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
         ) from exc
     settings = get_settings()
-    auth = GmailAuthManager(
-        credentials_path=settings.gmail.credentials_path,
-        token_path=settings.gmail.token_path,
-        scopes=settings.gmail.scopes,
-    )
+    auth = build_auth_manager(settings)
     service = build("gmail", "v1", credentials=auth.get_credentials())
     return (
         GmailReader(service, user_id=settings.gmail.user_id),

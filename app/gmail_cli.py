@@ -4,7 +4,7 @@ import argparse
 import logging
 from datetime import datetime, timezone
 
-from app.auth.gmail_auth import GmailAuthManager
+from app.auth.gmail_auth import build_auth_manager
 from app.config.settings import AppSettings, get_settings
 from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
 from app.email.clean_email import prepare_untrusted_email_for_llm
@@ -92,11 +92,7 @@ def main() -> None:
         return
     sqlite = SQLiteManager(settings.database.sqlite_path)
 
-    auth = GmailAuthManager(
-        credentials_path=settings.gmail.credentials_path,
-        token_path=settings.gmail.token_path,
-        scopes=settings.gmail.scopes,
-    )
+    auth = build_auth_manager(settings)
     service = build("gmail", "v1", credentials=auth.get_credentials())
     reader = GmailReader(service, user_id=settings.gmail.user_id)
     draft_creator = GmailDraftCreator(service, user_id=settings.gmail.user_id)

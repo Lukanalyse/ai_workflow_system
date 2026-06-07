@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Email Assistant</title>
+  <link rel="stylesheet" href="/static/style.css?v=4" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">✉️</span>
+      <h1>AI Email Assistant</h1>
+      <span class="tag" id="mode-tag">draft-only</span>
+    </div>
+    <div class="actions">
+      <span id="health" class="health" title="System status">checking…</span>
+      <button id="refresh-btn" class="btn">Load emails</button>
+      <button id="settings-btn" class="btn ghost">⚙ Settings</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button id="tab-inbox" class="tab active">Inbox</button>
+    <button id="tab-usage" class="tab">Usage</button>
+  </nav>
+
+  <!-- Filesystem / installation problems (blocking) — shown above everything
+       else so a non-technical user sees exactly what to fix on disk. -->
+  <section id="fs-banner" class="fs-banner hidden">
+    <div class="fs-title">⚠ Installation problem</div>
+    <p class="fs-intro">The app cannot start until these are fixed:</p>
+    <ul id="fs-list" class="fs-list"></ul>
+  </section>
+
+  <!-- Onboarding banner + setup checklist (shown until fully configured) -->
+  <section id="onboarding" class="onboarding hidden">
+    <div class="ob-row">
+      <div class="ob-text">
+        <b id="ob-title">Finish setup to start using the assistant</b>
+        <span id="ob-msg" class="muted"></span>
+      </div>
+      <div class="ob-actions">
+        <button id="ob-upload" class="btn small">Upload credentials.json</button>
+        <button id="ob-connect" class="btn small primary">Connect Gmail</button>
+        <button id="ob-settings" class="btn small ghost">Open Settings</button>
+        <input id="ob-creds-file" type="file" accept=".json,application/json" class="hidden" />
+      </div>
+    </div>
+    <ul id="ob-checklist" class="checklist">
+      <li data-key="llm"><span class="ck">○</span> LLM configured</li>
+      <li data-key="creds"><span class="ck">○</span> credentials.json uploaded</li>
+      <li data-key="gmail"><span class="ck">○</span> Gmail connected</li>
+      <li data-key="db"><span class="ck">○</span> Database ready</li>
+    </ul>
+    <span id="ob-status" class="muted"></span>
+  </section>
+
+  <main id="view-inbox" class="layout">
+    <section class="list-pane">
+      <div class="bulk">
+        <div class="bulk-head">Bulk draft creation</div>
+        <p class="muted bulk-hint">Creates Gmail drafts for the last <i>N</i> replyable
+          emails (independent of the selection). Non-replyable emails are skipped.</p>
+        <div class="bulk-counts">
+          <span class="muted">Last emails:</span>
+          <button class="chip" data-count="10">10</button>
+          <button class="chip active" data-count="20">20</button>
+          <button class="chip" data-count="50">50</button>
+          <button class="chip" data-count="100">100</button>
+        </div>
+        <div class="bulk-actions">
+          <button id="bulk-gensave" class="btn small primary">Generate + Save drafts</button>
+          <button id="bulk-gensave-all" class="btn small ghost">Generate + Save all replyable</button>
+        </div>
+        <div id="bulk-progress" class="bulk-progress hidden">
+          <div class="muted" id="bp-text">Processing 0 / 0</div>
+          <div class="bar"><div id="bp-bar" class="bar-fill"></div></div>
+        </div>
+        <div id="bulk-report" class="bulk-report hidden"></div>
+      </div>
+
+      <div class="list-controls">
+        <label>Max <input id="max-emails" type="number" min="1" max="100" value="20" /></label>
+        <label class="toggle"><input id="only-replyable" type="checkbox" checked /> Show only emails requiring a response</label>
+      </div>
+      <ul id="email-list" class="email-list"></ul>
+      <p id="list-empty" class="muted">Click “Load emails” to fetch your unread inbox.</p>
+    </section>
+
+    <section class="detail-pane">
+      <div id="detail-empty" class="muted center">Select an email to generate a reply draft.</div>
+      <div id="detail" class="detail hidden">
+        <h2 id="d-subject"></h2>
+        <div class="meta"><span id="d-sender"></span> · <span id="d-date"></span></div>
+
+        <div id="d-reply" class="replyability">
+          <div class="reply-head">
+            <span>Replyability score: <b id="d-score">–</b></span>
+            <span id="d-class" class="reply-class"></span>
+          </div>
+          <ul id="d-reasons" class="reply-reasons"></ul>
+        </div>
+
+        <p id="d-snippet" class="snippet"></p>
+
+        <div class="controls">
+          <label>Tone
+            <select id="d-tone">
+              <option value="professional">professional</option>
+              <option value="friendly">friendly</option>
+              <option value="formal">formal</option>
+              <option value="concise">concise</option>
+              <option value="detailed">detailed</option>
+            </select>
+          </label>
+          <label>Language
+            <select id="d-language">
+              <option value="auto">auto</option>
+              <option value="fr">French</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <button id="generate-btn" class="btn">Generate draft</button>
+        </div>
+
+        <div id="d-summary-wrap" class="summary hidden">
+          <h3>Summary</h3>
+          <p id="d-summary"></p>
+        </div>
+
+        <label class="draft-label">Draft reply</label>
+        <textarea id="d-draft" rows="14" placeholder="Generated draft will appear here…"></textarea>
+        <div class="controls">
+          <button id="save-btn" class="btn primary" disabled>Save to Gmail Drafts</button>
+          <button id="send-btn" class="btn danger hidden" disabled>Send email</button>
+          <span id="save-status" class="muted"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <section id="view-usage" class="usage-view hidden">
+    <div class="usage-grid">
+      <div class="card">
+        <h2>Today</h2>
+        <div class="urow"><span>Emails analyzed</span><b id="u-analyzed">–</b></div>
+        <div class="urow"><span>Drafts generated</span><b id="u-generated">–</b></div>
+        <div class="urow"><span>Drafts sent</span><b id="u-sent">–</b></div>
+        <hr />
+        <div class="urow"><span>Input tokens</span><b id="u-in">–</b></div>
+        <div class="urow"><span>Output tokens</span><b id="u-out">–</b></div>
+        <div class="urow"><span>Total tokens</span><b id="u-tot">–</b></div>
+        <hr />
+        <div class="urow total"><span>Cost today</span><b id="u-cost-today">–</b></div>
+      </div>
+      <div class="card">
+        <h2>Current month</h2>
+        <div class="urow total"><span>Spent</span><b><span id="u-month-cost">–</span> / <span id="u-budget">–</span></b></div>
+        <div class="bar"><div id="u-bar" class="bar-fill"></div></div>
+        <p class="muted"><span id="u-pct">0</span>% used · Remaining <b id="u-remaining">–</b></p>
+        <hr />
+        <div class="urow"><span>Drafts generated</span><b id="u-m-generated">–</b></div>
+        <div class="urow"><span>Drafts sent</span><b id="u-m-sent">–</b></div>
+        <div class="urow"><span>Total tokens</span><b id="u-m-tokens">–</b></div>
+      </div>
+    </div>
+
+    <div class="usage-grid">
+      <div class="card">
+        <h2>By provider (month)</h2>
+        <div id="u-providers" class="breakdown"></div>
+      </div>
+      <div class="card">
+        <h2>By model (month)</h2>
+        <div id="u-models" class="breakdown"></div>
+      </div>
+    </div>
+
+    <div class="card wide">
+      <h2>Daily cost (month)</h2>
+      <div id="u-daily" class="daily"></div>
+    </div>
+    <p id="usage-status" class="muted"></p>
+  </section>
+
+  <!-- ===================== Settings (AI / Filtering / Gmail / Usage) ===================== -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-card settings-card">
+      <div class="settings-head">
+        <h2>Settings</h2>
+        <button id="set-close" class="btn ghost small">Close</button>
+      </div>
+      <div class="settings-body">
+        <nav class="settings-nav">
+          <button class="set-tab active" data-pane="ai">AI</button>
+          <button class="set-tab" data-pane="filtering">Filtering</button>
+          <button class="set-tab" data-pane="gmail">Gmail</button>
+          <button class="set-tab" data-pane="usage">Usage</button>
+        </nav>
+
+        <div class="settings-panes">
+          <!-- ---------- AI ---------- -->
+          <section id="pane-ai" class="set-pane">
+            <h3 class="section">Provider</h3>
+            <div class="grid2">
+              <label>Provider
+                <select id="s-provider">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                </select>
+              </label>
+              <label>Model <select id="s-model"></select></label>
+            </div>
+            <label id="s-apikey-label">API key
+              <input id="s-apikey" type="password" placeholder="sk-…" />
+            </label>
+            <label>Temperature: <b id="s-temp-val">0.2</b>
+              <input id="s-temp" type="range" min="0" max="1" step="0.05" value="0.2" />
+            </label>
+
+            <h3 class="section">Reply behaviour</h3>
+            <label>Custom instructions (added to every draft)
+              <textarea id="c-prompt" rows="4" placeholder="be concise
+answer in the sender's language
+always propose a meeting when relevant"></textarea>
+            </label>
+            <label>Signature (appended to every draft)
+              <textarea id="c-signature" rows="3" placeholder="Jane Doe
+AI Engineer"></textarea>
+            </label>
+            <div class="grid2">
+              <label>Default language
+                <select id="c-language">
+                  <option value="auto">Auto</option>
+                  <option value="fr">French</option>
+                  <option value="en">English</option>
+                </select>
+              </label>
+              <label>Default tone
+                <select id="c-tone">
+                  <option value="professional">Professional</option>
+                  <option value="friendly">Friendly</option>
+                  <option value="formal">Formal</option>
+                  <option value="concise">Concise</option>
+                  <option value="detailed">Detailed</option>
+                </select>
+              </label>
+            </div>
+            <div class="controls">
+              <button id="ai-save" class="btn primary">Save</button>
+              <span id="ai-status" class="muted"></span>
+            </div>
+          </section>
+
+          <!-- ---------- Filtering ---------- -->
+          <section id="pane-filtering" class="set-pane hidden">
+            <h3 class="section">Email filtering rules</h3>
+            <label>Banned senders — always ignored (one per line; email or domain)
+              <textarea id="c-banned" rows="3" placeholder="noreply@email.openai.com
+youtube.com"></textarea>
+            </label>
+            <label>Allowed senders — always shown / always replyable (one per line)
+              <textarea id="c-allowed" rows="3" placeholder="adrien@example.com"></textarea>
+            </label>
+            <label>Keywords to ignore — lower replyability if found (one per line)
+              <textarea id="c-keywords" rows="3" placeholder="newsletter
+unsubscribe"></textarea>
+            </label>
+
+            <h3 class="section">Replyability engine</h3>
+            <p class="muted">An email is “Reply required” when its score ≥ threshold.
+              Allowed senders are always replyable; banned senders are always filtered.</p>
+            <div class="grid2">
+              <label>Threshold <input id="c-threshold" type="number" /></label>
+            </div>
+            <div class="weights">
+              <label>Question detected <input id="w-question" type="number" /></label>
+              <label>Known contact <input id="w-known" type="number" /></label>
+              <label>Personal sender <input id="w-personal" type="number" /></label>
+              <label>Contains newsletter <input id="w-newsletter" type="number" /></label>
+              <label>No-reply sender <input id="w-noreply" type="number" /></label>
+            </div>
+            <div class="controls">
+              <button id="filter-save" class="btn primary">Save</button>
+              <span id="filter-status" class="muted"></span>
+            </div>
+          </section>
+
+          <!-- ---------- Gmail ---------- -->
+          <section id="pane-gmail" class="set-pane hidden">
+            <h3 class="section">Gmail connection</h3>
+
+            <div id="g-card" class="gmail-card">
+              <div class="gmail-status-line">
+                <span id="g-badge" class="gmail-badge off">Not connected</span>
+              </div>
+              <div id="g-details" class="gmail-details hidden">
+                <div class="urow"><span>Connected account</span><b id="g-email">–</b></div>
+                <div class="urow"><span>Token status</span><b id="g-token">–</b></div>
+                <div class="urow"><span>Last authentication</span><b id="g-refresh">–</b></div>
+                <div class="urow"><span>Permissions</span><b id="g-scopes">–</b></div>
+                <div class="urow"><span>OAuth health</span><b id="g-oauth">–</b></div>
+              </div>
+            </div>
+
+            <p id="g-creds-missing" class="warn-box hidden">
+              Gmail cannot be connected without a Google OAuth client file. Upload your
+              <code>credentials.json</code> below first, then click <b>Connect Gmail</b>.
+            </p>
+
+            <div id="g-creds-block" class="creds-block">
+              <p class="muted"><b id="g-creds-label">Upload your Google OAuth client file</b>
+                (<code>credentials.json</code>, downloaded from Google Cloud Console →
+                APIs &amp; Services → Credentials → OAuth client → Desktop app).</p>
+              <input id="g-creds-file" type="file" accept=".json,application/json" />
+              <span id="g-creds-status" class="muted"></span>
+            </div>
+
+            <div class="controls">
+              <button id="g-connect" class="btn primary">Connect Gmail</button>
+              <button id="g-disconnect" class="btn danger hidden">Disconnect Gmail</button>
+            </div>
+
+            <h3 class="section">Sending</h3>
+            <label class="toggle"><input id="g-send-toggle" type="checkbox" />
+              Enable sending emails (off = safe draft-only mode)</label>
+            <p class="muted">Turning this on requests the Gmail “send” permission, so you’ll
+              be asked to reconnect Gmail to re-consent.</p>
+          </section>
+
+          <!-- ---------- Usage ---------- -->
+          <section id="pane-usage" class="set-pane hidden">
+            <h3 class="section">Usage &amp; budget</h3>
+            <label>Monthly budget (USD)
+              <input id="s-budget" type="number" min="0" step="0.5" />
+            </label>
+            <div class="controls">
+              <button id="budget-save" class="btn primary">Save budget</button>
+              <span id="budget-status" class="muted"></span>
+            </div>
+            <p class="muted">See live spend and token usage on the
+              <a href="#" id="goto-usage">Usage dashboard →</a></p>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== First-run setup wizard ===================== -->
+  <div id="wizard" class="modal hidden">
+    <div class="modal-card wizard-card">
+      <div class="wiz-steps">
+        <span class="wiz-step active" data-step="1">1 · Provider</span>
+        <span class="wiz-step" data-step="2">2 · API key</span>
+        <span class="wiz-step" data-step="3">3 · Gmail</span>
+        <span class="wiz-step" data-step="4">4 · Finish</span>
+      </div>
+
+      <div id="wiz-1" class="wiz-pane">
+        <h2>Welcome 👋</h2>
+        <p class="muted">Let’s get you set up in a minute. First, choose your AI provider.</p>
+        <div class="wiz-provider">
+          <button class="provider-pick" data-provider="openai">
+            <b>OpenAI</b><span>GPT models</span>
+          </button>
+          <button class="provider-pick" data-provider="anthropic">
+            <b>Anthropic</b><span>Claude models</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="wiz-2" class="wiz-pane hidden">
+        <h2>Enter your API key</h2>
+        <p class="muted">Your <b id="wiz-provider-name">OpenAI</b> key is stored securely on the
+          server and never shown again.</p>
+        <input id="wiz-apikey" type="password" placeholder="sk-…" />
+        <div class="controls">
+          <button id="wiz-back-2" class="btn ghost">Back</button>
+          <button id="wiz-save-key" class="btn primary">Save &amp; continue</button>
+          <span id="wiz-key-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="wiz-3" class="wiz-pane hidden">
+        <h2>Connect Gmail</h2>
+        <p class="muted">Authorize the assistant to read your inbox and create drafts.
+          A Google sign-in page will open.</p>
+        <div id="wiz-creds-block" class="creds-block hidden">
+          <p class="muted">First, add your Google OAuth client file (<code>credentials.json</code>):</p>
+          <input id="wiz-creds-file" type="file" accept=".json,application/json" />
+          <span id="wiz-creds-status" class="muted"></span>
+        </div>
+        <div class="controls">
+          <button id="wiz-connect" class="btn primary">Connect Gmail</button>
+          <span id="wiz-gmail-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="wiz-4" class="wiz-pane hidden">
+        <h2>You’re all set ✓</h2>
+        <div class="urow"><span>Provider</span><b id="wiz-done-provider">–</b></div>
+        <div class="urow"><span>Gmail</span><b id="wiz-done-gmail">–</b></div>
+        <div class="controls">
+          <button id="wiz-finish" class="btn primary">Start using the assistant</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bulk cost estimate -->
+  <div id="estimate-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Estimated workload</h2>
+      <div class="urow"><span>Emails selected</span><b id="es-count">–</b></div>
+      <div class="urow"><span>Estimated input tokens</span><b id="es-in">–</b></div>
+      <div class="urow"><span>Estimated output tokens</span><b id="es-out">–</b></div>
+      <div class="urow total"><span>Estimated cost</span><b id="es-cost">–</b></div>
+      <p id="es-budget" class="warn-box hidden"></p>
+      <div class="controls">
+        <button id="es-cancel" class="btn ghost">Cancel</button>
+        <button id="es-continue" class="btn primary">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Send confirmation -->
+  <div id="send-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Send this email?</h2>
+      <p class="muted">Your reply will be sent via Gmail now. This cannot be undone.</p>
+      <div class="controls">
+        <button id="send-cancel" class="btn ghost">Cancel</button>
+        <button id="send-confirm" class="btn danger">Send Email</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Disconnect confirmation -->
+  <div id="disconnect-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Disconnect Gmail?</h2>
+      <p class="muted">The stored token will be removed and you’ll need to sign in again
+        to read mail or create drafts.</p>
+      <div class="controls">
+        <button id="dc-cancel" class="btn ghost">Cancel</button>
+        <button id="dc-confirm" class="btn danger">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js?v=3"></script>
+</body>
+</html>

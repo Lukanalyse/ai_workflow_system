@@ -22,6 +22,34 @@ class ProcessedEmailRecord:
 
 
 @dataclass(slots=True)
+class UsageEventRecord:
+    """One LLM call. One email typically produces several (summarize + draft)."""
+
+    timestamp: str
+    provider: str
+    model: str
+    operation: str  # "summarize" | "draft" | ...
+    email_message_id: str | None
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost: float
+    currency: str
+    run_id: str | None
+
+
+@dataclass(slots=True)
+class UsageSummary:
+    emails_analyzed: int
+    drafts_generated: int
+    drafts_sent: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cost: float
+
+
+@dataclass(slots=True)
 class GmailProcessedEmailRecord:
     message_id: str
     thread_id: str
@@ -45,7 +73,18 @@ class GmailProcessedEmailRecord:
 class SQLiteManager:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError, OSError) as exc:
+            raise RuntimeError(
+                f"Database folder {self.db_path.parent} could not be created "
+                f"({exc}). Make sure data/ is a folder, not a file."
+            ) from exc
+        if self.db_path.is_dir():
+            raise RuntimeError(
+                f"The database path {self.db_path} is a directory, not a file. "
+                "Remove the folder so the database file can be created."
+            )
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -103,6 +142,29 @@ class SQLiteManager:
                 ON gmail_processed_emails(thread_id)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    email_message_id TEXT,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    estimated_cost REAL NOT NULL DEFAULT 0,
+                    currency TEXT NOT NULL DEFAULT 'USD',
+                    run_id TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(timestamp)"
+            )
+            # Schema version marker for future migrations (idempotent set).
+            conn.execute("PRAGMA user_version = 1")
             conn.commit()
 
     def already_processed(self, message_id: str) -> bool:
@@ -174,6 +236,18 @@ class SQLiteManager:
             if thread_row is not None:
                 return True, "thread_draft_already_created"
         return False, None
+
+    def sender_seen(self, sender_email: str) -> bool:
+        """True if we have ever processed an email from this sender (known contact)."""
+        sender = (sender_email or "").strip().lower()
+        if not sender:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM gmail_processed_emails WHERE LOWER(sender) = ? LIMIT 1",
+                (sender,),
+            ).fetchone()
+        return row is not None
 
     def save_gmail_processed_email(self, record: GmailProcessedEmailRecord) -> None:
         with self._connect() as conn:
@@ -254,6 +328,152 @@ class SQLiteManager:
             payload["draft_created"] = bool(payload["draft_created"])
             records.append(GmailProcessedEmailRecord(**payload))
         return records
+
+    def record_usage_event(self, record: UsageEventRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO usage_events (
+                    timestamp, provider, model, operation, email_message_id,
+                    input_tokens, output_tokens, total_tokens, estimated_cost,
+                    currency, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.timestamp,
+                    record.provider,
+                    record.model,
+                    record.operation,
+                    record.email_message_id,
+                    record.input_tokens,
+                    record.output_tokens,
+                    record.total_tokens,
+                    record.estimated_cost,
+                    record.currency,
+                    record.run_id,
+                ),
+            )
+            conn.commit()
+
+    def usage_summary(self, *, since_iso: str) -> UsageSummary:
+        """Aggregate usage from `since_iso` (inclusive) to now.
+
+        Boundaries are passed as ISO-UTC strings produced by `now_iso`, so a
+        lexical `timestamp >= ?` comparison is correct (identical format/tz).
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN operation = 'summarize' THEN 1 ELSE 0 END), 0) AS analyzed,
+                    COALESCE(SUM(CASE WHEN operation = 'draft' THEN 1 ELSE 0 END), 0) AS generated,
+                    COALESCE(SUM(CASE WHEN operation = 'send' THEN 1 ELSE 0 END), 0) AS sent,
+                    COALESCE(SUM(input_tokens), 0) AS in_tok,
+                    COALESCE(SUM(output_tokens), 0) AS out_tok,
+                    COALESCE(SUM(total_tokens), 0) AS tot_tok,
+                    COALESCE(SUM(estimated_cost), 0.0) AS cost
+                FROM usage_events
+                WHERE timestamp >= ?
+                """,
+                (since_iso,),
+            ).fetchone()
+        return UsageSummary(
+            emails_analyzed=int(row["analyzed"]),
+            drafts_generated=int(row["generated"]),
+            drafts_sent=int(row["sent"]),
+            input_tokens=int(row["in_tok"]),
+            output_tokens=int(row["out_tok"]),
+            total_tokens=int(row["tot_tok"]),
+            cost=float(row["cost"]),
+        )
+
+    def usage_averages(self) -> tuple[float, float]:
+        """Return (avg_input, avg_output) tokens per *email* across all history.
+
+        One email = one summarize + one draft call, so averages for those two
+        operations are summed. Returns (0, 0) when there is no history yet.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT operation,
+                       AVG(input_tokens) AS avg_in,
+                       AVG(output_tokens) AS avg_out
+                FROM usage_events
+                WHERE operation IN ('summarize', 'draft')
+                GROUP BY operation
+                """
+            ).fetchall()
+        avg_in = sum(float(r["avg_in"] or 0.0) for r in rows)
+        avg_out = sum(float(r["avg_out"] or 0.0) for r in rows)
+        return avg_in, avg_out
+
+    def usage_breakdown(self, *, since_iso: str) -> dict:
+        """Per-provider and per-model token/cost totals since `since_iso`."""
+        with self._connect() as conn:
+            providers = conn.execute(
+                """
+                SELECT provider,
+                       COALESCE(SUM(total_tokens), 0) AS tokens,
+                       COALESCE(SUM(estimated_cost), 0.0) AS cost
+                FROM usage_events
+                WHERE timestamp >= ? AND model != '-'
+                GROUP BY provider
+                ORDER BY cost DESC
+                """,
+                (since_iso,),
+            ).fetchall()
+            models = conn.execute(
+                """
+                SELECT provider, model,
+                       COALESCE(SUM(total_tokens), 0) AS tokens,
+                       COALESCE(SUM(estimated_cost), 0.0) AS cost
+                FROM usage_events
+                WHERE timestamp >= ? AND model != '-'
+                GROUP BY provider, model
+                ORDER BY cost DESC
+                """,
+                (since_iso,),
+            ).fetchall()
+        return {
+            "providers": [
+                {"provider": r["provider"], "tokens": int(r["tokens"]), "cost": round(float(r["cost"]), 4)}
+                for r in providers
+            ],
+            "models": [
+                {
+                    "provider": r["provider"],
+                    "model": r["model"],
+                    "tokens": int(r["tokens"]),
+                    "cost": round(float(r["cost"]), 4),
+                }
+                for r in models
+            ],
+        }
+
+    def daily_costs(self, *, since_iso: str) -> list[dict]:
+        """Daily cost totals since `since_iso` (ISO date prefix grouping)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(timestamp, 1, 10) AS day,
+                       COALESCE(SUM(estimated_cost), 0.0) AS cost
+                FROM usage_events
+                WHERE timestamp >= ?
+                GROUP BY day
+                ORDER BY day
+                """,
+                (since_iso,),
+            ).fetchall()
+        return [{"date": r["day"], "cost": round(float(r["cost"]), 4)} for r in rows]
+
+    def usage_cost_since(self, *, since_iso: str) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost), 0.0) AS cost FROM usage_events WHERE timestamp >= ?",
+                (since_iso,),
+            ).fetchone()
+        return float(row["cost"])
 
     @staticmethod
     def now_iso() -> str:

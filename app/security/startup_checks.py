@@ -5,6 +5,7 @@ import stat
 from pathlib import Path
 
 from app.config.settings import AppSettings
+from app.security.fs_validation import check_critical_paths, safe_mkdir
 
 PLACEHOLDER_API_KEYS = {
     "",
@@ -77,6 +78,14 @@ def validate_and_prepare_runtime(settings: AppSettings) -> tuple[list[str], list
     errors: list[str] = []
     warnings: list[str] = []
 
+    # Filesystem-shape preflight: a ``.env`` directory, a ``logs`` file, etc.
+    # surface here as clear errors instead of crashing later on first use.
+    for issue in check_critical_paths(settings):
+        if issue.severity == "error":
+            errors.append(issue.message)
+        else:
+            warnings.append(issue.message)
+
     api_key = settings.llm.api_key.strip()
     if api_key.lower() in PLACEHOLDER_API_KEYS:
         errors.append("LLM__API_KEY is missing or still set to a placeholder value.")
@@ -103,7 +112,11 @@ def validate_and_prepare_runtime(settings: AppSettings) -> tuple[list[str], list
         settings.database.sqlite_path.parent,
         settings.log_file.parent,
     ):
-        parent.mkdir(parents=True, exist_ok=True)
+        # safe_mkdir never raises for a wrong-type path; it reports the problem.
+        mkdir_issue = safe_mkdir(parent)
+        if mkdir_issue is not None:
+            errors.append(mkdir_issue.message)
+            continue
         if str(parent) not in {"", "."}:
             dir_change = _ensure_private_dir_permissions(parent)
             if dir_change:
