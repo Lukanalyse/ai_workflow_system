@@ -11,6 +11,7 @@ let lastEmails = []; // last fetched candidates (unfiltered)
 let availableModels = { openai: [], anthropic: [] };
 let settingsCache = null; // last /api/settings response
 let gmailCache = null; // last /api/gmail/status response
+let connectedEmail = null; // connected Gmail account (shown as the recipient)
 
 async function api(path, options) {
   const res = await fetch(path, {
@@ -44,6 +45,8 @@ function fmtRelativeDate(iso) {
   if (min < 60) return min + "m";
   const hr = Math.round(min / 60);
   if (hr < 24) return hr + "h";
+  const day = Math.round(hr / 24);
+  if (day < 7) return day + "d";
   const sameYear = d.getFullYear() === now.getFullYear();
   return d.toLocaleDateString("en-US",
     sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
@@ -75,12 +78,56 @@ function renderAttachments(el, attachments) {
   attachments = attachments || [];
   if (!attachments.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
   el.classList.remove("hidden");
+  // Each chip reserves a slot for a future PDF/image preview (Phase 9): clicking
+  // is a no-op today, but the markup/affordance is already in place.
   el.innerHTML = attachments.map((a) => {
     const size = fmtSize(a.size);
-    return `<span class="attach-chip" title="${escapeHtml(a.mime_type || "")}">` +
-      `${attachIcon(a.mime_type, a.name)} ${escapeHtml(a.name)}` +
-      `${size ? ` <span class="att-size">· ${size}</span>` : ""}</span>`;
+    return `<span class="attach-chip" title="${escapeHtml(a.mime_type || "")} — preview coming soon">` +
+      `<span class="att-icon">${attachIcon(a.mime_type, a.name)}</span>` +
+      `<span class="att-name">${escapeHtml(a.name)}</span>` +
+      `${size ? `<span class="att-size">${size}</span>` : ""}</span>`;
   }).join("");
+}
+
+// --- Visual identity: avatars, badges, importance ---------------------------
+const AVATAR_COLORS = [
+  "#2563eb", "#7c3aed", "#db2777", "#dc2626", "#ea580c",
+  "#d97706", "#16a34a", "#0891b2", "#4f46e5", "#0d9488",
+];
+function initialsFor(name, email) {
+  const n = (name || "").trim();
+  if (n) {
+    const parts = n.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return n.slice(0, 2).toUpperCase();
+  }
+  return (email || "?").trim().slice(0, 2).toUpperCase() || "?";
+}
+function avatarFor(em) {
+  const email = (em.sender_email || em.sender_name || "?").trim().toLowerCase();
+  let h = 0;
+  for (let i = 0; i < email.length; i++) h = (h * 31 + email.charCodeAt(i)) >>> 0;
+  return { text: initialsFor(em.sender_name, em.sender_email), color: AVATAR_COLORS[h % AVATAR_COLORS.length] };
+}
+// Importance dot. Colored when a level is known (Phase 6); a neutral placeholder
+// otherwise, so the slot already exists in the layout.
+function importanceDot(em) {
+  const lvl = String(em.importance || "").toLowerCase();
+  const cls = lvl === "high" ? "high" : (lvl === "medium" || lvl === "med") ? "med" : lvl === "low" ? "low" : "none";
+  const title = lvl ? `Importance: ${lvl}` : "Importance — coming soon";
+  return `<span class="imp-dot imp-${cls}" title="${escapeHtml(title)}"></span>`;
+}
+// Non-score metadata badges shared by the list rows and the read pane.
+function metaBadges(em) {
+  const out = [];
+  if (em.already_processed) out.push(`<span class="badge seen">handled</span>`);
+  const nAtt = attachmentCount(em);
+  if (nAtt) out.push(`<span class="badge attach">📎 ${nAtt}</span>`);
+  if (em.category) {
+    const slug = String(em.category).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    out.push(`<span class="badge cat cat-${escapeHtml(slug)}">${escapeHtml(em.category)}</span>`);
+  }
+  return out;
 }
 
 // --- Toast notifications ----------------------------------------------------
@@ -174,17 +221,20 @@ function renderItem(em) {
   const li = document.createElement("li");
   li.className = "email-item" + (em.is_unread ? " unread" : "");
   li.dataset.id = em.id;
-  const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`];
-  if (em.already_processed) badges.push(`<span class="badge seen">already handled</span>`);
-  const nAtt = attachmentCount(em);
-  if (nAtt) badges.push(`<span class="badge attach">📎 ${nAtt}</span>`);
+  const av = avatarFor(em);
+  const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
+  const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
   li.innerHTML = `
-    <div class="row-top">
-      <span class="subj">${escapeHtml(em.subject)}</span>
-      <span class="date" title="${escapeHtml(new Date(em.received_at).toLocaleString())}">${escapeHtml(fmtRelativeDate(em.received_at))}</span>
-    </div>
-    <div class="from">${escapeHtml(em.sender_name || em.sender_email)}</div>
-    <div class="badges">${badges.join("")}</div>`;
+    <div class="avatar" style="background:${av.color}">${escapeHtml(av.text)}</div>
+    <div class="email-main">
+      <div class="row-top">
+        <span class="from">${escapeHtml(em.sender_name || em.sender_email)}</span>
+        <span class="date" title="${dateTitle}">${escapeHtml(fmtRelativeDate(em.received_at))}</span>
+      </div>
+      <div class="subj-line">${importanceDot(em)}<span class="subj">${escapeHtml(em.subject)}</span></div>
+      <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
+      <div class="badges">${badges.join("")}</div>
+    </div>`;
   li.addEventListener("click", () => selectEmail(em, li));
   return li;
 }
@@ -198,6 +248,13 @@ function selectEmail(em, li) {
   $("d-subject").textContent = em.subject;
   $("d-sender").textContent = em.sender_name ? `${em.sender_name} <${em.sender_email}>` : em.sender_email;
   $("d-date").textContent = new Date(em.received_at).toLocaleString();
+  const av = avatarFor(em);
+  const avEl = $("d-avatar");
+  avEl.textContent = av.text;
+  avEl.style.background = av.color;
+  $("d-recipient").textContent = connectedEmail || "you";
+  const statusBadge = `<span class="badge ${em.is_unread ? "unread-badge" : "read-badge"}">${em.is_unread ? "Unread" : "Read"}</span>`;
+  $("d-badges").innerHTML = importanceDot(em) + statusBadge + metaBadges(em).join("");
   renderAttachments($("d-attachments"), em.attachments);
   $("d-snippet").textContent = em.snippet;
   $("d-score").textContent = em.score;
@@ -554,6 +611,7 @@ async function refreshGmailStatus() {
   try {
     const g = await api("/api/gmail/status");
     gmailCache = g;
+    if (g.email) connectedEmail = g.email;
     renderGmailStatus(g);
   } catch (e) {
     toast("Gmail status error: " + e.message, "error");
@@ -619,6 +677,7 @@ function setCheck(key, done) {
 async function renderOnboarding() {
   let s;
   try { s = await api("/api/setup/status"); } catch (_) { return; }
+  if (s.gmail_email) connectedEmail = s.gmail_email;
   // A blocking filesystem problem takes priority over onboarding: surface it
   // and hide the setup checklist (which can't proceed until disk is fixed).
   if (s.filesystem_ok === false) {

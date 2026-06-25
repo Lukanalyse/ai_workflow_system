@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=5" />
+  <link rel="stylesheet" href="/static/style.css?v=6" />
 </head>
 <body>
   <header class="topbar">
@@ -91,9 +91,18 @@
     <section class="detail-pane">
       <div id="detail-empty" class="muted center">Select an email to generate a reply draft.</div>
       <div id="detail" class="detail hidden">
-        <h2 id="d-subject"></h2>
-        <div class="meta"><span id="d-sender"></span> · <span id="d-date"></span></div>
-        <div id="d-attachments" class="attachments hidden"></div>
+        <header class="detail-head">
+          <h2 id="d-subject"></h2>
+          <div class="detail-id">
+            <div class="avatar avatar-lg" id="d-avatar"></div>
+            <div class="detail-id-lines">
+              <div class="detail-from"><span id="d-sender"></span></div>
+              <div class="detail-sub">To <span id="d-recipient">you</span> · <span id="d-date"></span></div>
+            </div>
+          </div>
+          <div id="d-badges" class="detail-badges"></div>
+          <div id="d-attachments" class="attachments hidden"></div>
+        </header>
 
         <div id="d-reply" class="replyability">
           <div class="reply-head">
@@ -103,7 +112,10 @@
           <ul id="d-reasons" class="reply-reasons"></ul>
         </div>
 
-        <p id="d-snippet" class="snippet"></p>
+        <section class="content-block">
+          <h3 class="block-label">Message</h3>
+          <p id="d-snippet" class="snippet"></p>
+        </section>
 
         <div class="controls">
           <label>Tone
@@ -452,6 +464,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>
