@@ -14,6 +14,7 @@ import pytest
 
 from app.database.sqlite_manager import GmailProcessedEmailRecord, SQLiteManager
 from app.email.attachment_detector import detect_attachments
+from app.email.gmail_reader import GmailReader, GmailReadConfig
 
 
 @pytest.fixture()
@@ -121,3 +122,61 @@ def test_detect_attachments_none() -> None:
     meta = detect_attachments(payload)
     assert meta.has_attachments is False
     assert meta.attachments == []
+
+
+# --- Phase 2: status query builder + pagination ------------------------------
+def test_build_query_status_variants() -> None:
+    r = GmailReader.__new__(GmailReader)  # _build_query needs no live service
+    assert "is:unread" in r._build_query(GmailReadConfig())  # default unchanged
+    assert "is:read" in r._build_query(GmailReadConfig(status="read"))
+    all_q = r._build_query(GmailReadConfig(status="all"))
+    assert "is:unread" not in all_q and "is:read" not in all_q
+    # Legacy callers (only_unread=False, no status) get the unconstrained query.
+    assert "is:unread" not in r._build_query(GmailReadConfig(only_unread=False))
+
+
+class _FakeMessages:
+    """Minimal Gmail messages() resource that paginates a fixed id list."""
+
+    def __init__(self, ids: list[str], page_size: int) -> None:
+        self._ids = ids
+        self._page = page_size
+
+    def list(self, *, userId, maxResults, q, pageToken=None):
+        start = int(pageToken or 0)
+        end = min(start + min(maxResults, self._page), len(self._ids))
+        next_token = str(end) if end < len(self._ids) else None
+        payload = {"messages": [{"id": i} for i in self._ids[start:end]]}
+        if next_token:
+            payload["nextPageToken"] = next_token
+        return _Exec(payload)
+
+
+class _Exec:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def execute(self):
+        return self._payload
+
+
+def test_collect_ids_paginates_to_target() -> None:
+    r = GmailReader.__new__(GmailReader)
+    r.user_id = "me"
+    ids = [f"m{i}" for i in range(120)]
+
+    class _Svc:
+        def __init__(self, msgs):
+            self._msgs = msgs
+
+        def users(self):
+            return self
+
+        def messages(self):
+            return self._msgs
+
+    # Page size 50 forces multiple pages; target 120 must gather all 120.
+    r.service = _Svc(_FakeMessages(ids, page_size=50))
+    assert r._collect_ids("q", 120) == ids
+    # A smaller target stops early without over-fetching.
+    assert r._collect_ids("q", 30) == ids[:30]

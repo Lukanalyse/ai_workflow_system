@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from app.database.sqlite_manager import SQLiteManager
 from app.email.attachment_detector import AttachmentInfo
+from app.email.gmail_reader import LIST_MAX_RESULTS
 from app.email.replyability import ReplyabilityScorer
 from app.providers.base import EmailListConfig, EmailMessage, EmailProvider
 
@@ -47,8 +48,13 @@ class EmailService:
         self._sqlite = sqlite
         self._scorer = scorer
 
-    def list_candidates(self, *, max_emails: int = 20) -> list[EmailCandidate]:
-        config = EmailListConfig(max_emails=max(1, min(max_emails, 100)))
+    def list_candidates(
+        self, *, max_emails: int = 20, status: str = "unread"
+    ) -> list[EmailCandidate]:
+        config = EmailListConfig(
+            max_emails=max(1, min(max_emails, LIST_MAX_RESULTS)),
+            status=status if status in {"unread", "read", "all"} else "unread",
+        )
         messages = self._provider.list_messages(config)
 
         # Resolve "already processed" and "known sender" for the whole batch in

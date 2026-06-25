@@ -39,6 +39,8 @@ class EmailListConfig:
     sender_filter: str | None = None
     exclude_promotions: bool = True
     exclude_noreply: bool = True
+    # Read-status filter: "unread" (default, current behavior) | "read" | "all".
+    status: str = "unread"
 
 
 @dataclass(slots=True)

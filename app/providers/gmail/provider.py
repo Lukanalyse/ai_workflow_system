@@ -121,6 +121,7 @@ class GmailProvider(EmailProvider):
             sender_filter=config.sender_filter,
             exclude_promotions=config.exclude_promotions,
             exclude_noreply=config.exclude_noreply,
+            status=config.status,
         )
         return [_to_email_message(m) for m in self._reader.list_latest_unread(read_config)]
 

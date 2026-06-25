@@ -13,6 +13,12 @@ from app.email.attachment_detector import AttachmentInfo, detect_attachments
 
 logger = logging.getLogger(__name__)
 
+# Safety ceiling for a single listing (incl. the "all" option). Prevents a
+# pathological full-mailbox scan from issuing thousands of per-message gets.
+LIST_MAX_RESULTS = 500
+# Gmail's messages.list returns at most 500 ids per page.
+_GMAIL_PAGE_SIZE = 500
+
 NOREPLY_PATTERN = re.compile(r"(?:^|[._-])(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply)(?:@|$)")
 AUTOMATION_SENDER_MARKERS = {
     "linkedin.com",
@@ -73,6 +79,9 @@ class GmailReadConfig:
     sender_filter: str | None = None
     exclude_promotions: bool = True
     exclude_noreply: bool = True
+    # "unread" | "read" | "all". When None, falls back to only_unread so older
+    # callers keep their previous behavior.
+    status: str | None = None
 
 
 class GmailReader:
@@ -82,8 +91,12 @@ class GmailReader:
 
     def _build_query(self, config: GmailReadConfig) -> str:
         parts = ["in:inbox", "-in:spam", "-in:trash"]
-        if config.only_unread:
+        status = (config.status or ("unread" if config.only_unread else "all")).lower()
+        if status == "unread":
             parts.append("is:unread")
+        elif status == "read":
+            parts.append("is:read")
+        # "all": no read-status constraint.
         if config.exclude_promotions:
             parts.extend(["-category:promotions", "-category:social"])
         if config.after_date:
@@ -180,23 +193,41 @@ class GmailReader:
         )
         return self._parse_message(detail)
 
+    def _collect_ids(self, query: str, target: int) -> list[str]:
+        """Page through messages.list until `target` ids are gathered or the
+        result set is exhausted. Only ids are pulled here (cheap); bodies are
+        fetched separately so we never over-fetch beyond `target`."""
+        ids: list[str] = []
+        page_token: str | None = None
+        while len(ids) < target:
+            resp = (
+                self.service.users()
+                .messages()
+                .list(
+                    userId=self.user_id,
+                    maxResults=min(_GMAIL_PAGE_SIZE, target - len(ids)),
+                    q=query,
+                    pageToken=page_token,
+                )
+                .execute()
+            )
+            ids.extend(str(r["id"]) for r in resp.get("messages", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return ids[:target]
+
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:
-        hard_limit = max(1, min(config.max_emails, 100))
+        target = max(1, min(config.max_emails, LIST_MAX_RESULTS))
         query = self._build_query(config)
-        logger.info("Fetching latest Gmail unread messages: limit=%s query=%s", hard_limit, query)
-        rows = (
-            self.service.users()
-            .messages()
-            .list(userId=self.user_id, maxResults=hard_limit, q=query)
-            .execute()
-            .get("messages", [])
-        )
+        logger.info("Fetching Gmail messages: target=%s query=%s", target, query)
+        ids = self._collect_ids(query, target)
         messages: list[GmailMessage] = []
-        for row in rows:
+        for message_id in ids:
             detail = (
                 self.service.users()
                 .messages()
-                .get(userId=self.user_id, id=row["id"], format="full")
+                .get(userId=self.user_id, id=message_id, format="full")
                 .execute()
             )
             messages.append(self._parse_message(detail))

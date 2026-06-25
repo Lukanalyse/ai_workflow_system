@@ -289,10 +289,24 @@ def health() -> dict:
 
 
 @app.get("/api/emails")
-def list_emails(max: int = 20) -> dict:
+def list_emails(max: str = "20", status: str = "unread") -> dict:
     _require_ready()
+    # ``max`` is a string so the UI can request "all"; numeric values stay
+    # backward-compatible. "all" maps to the listing safety ceiling.
+    from app.email.gmail_reader import LIST_MAX_RESULTS
+
+    raw = (max or "20").strip().lower()
+    if raw in {"all", "tous", "0"}:
+        max_emails = LIST_MAX_RESULTS
+    else:
+        try:
+            max_emails = int(raw)
+        except ValueError:
+            max_emails = 20
     try:
-        candidates = container.email_service.list_candidates(max_emails=max)
+        candidates = container.email_service.list_candidates(
+            max_emails=max_emails, status=status
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to list emails")
         raise HTTPException(status_code=502, detail=str(exc)) from exc

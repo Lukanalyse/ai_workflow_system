@@ -13,6 +13,15 @@ let settingsCache = null; // last /api/settings response
 let gmailCache = null; // last /api/gmail/status response
 let connectedEmail = null; // connected Gmail account (shown as the recipient)
 
+// --- Inbox controls state (Phase 2) -----------------------------------------
+let pageSize = "20";          // #page-size: 20|50|100|200|all
+let statusFilter = "unread";  // status segment: unread|read|all (drives refetch)
+let searchQuery = "";         // instant client-side search
+let filterAttachments = false; // "Has attachments" chip (client-side)
+let filterNeedsReply = true;   // "Needs reply" chip (client-side; persists as show_only_replyable)
+const selectedIds = new Set(); // selected email ids for bulk actions
+let selectionBusy = false;     // a bulk action is running
+
 async function api(path, options) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -190,9 +199,11 @@ async function loadEmails() {
   const empty = $("list-empty");
   empty.textContent = "Loading…";
   $("email-list").innerHTML = "";
+  // A fresh fetch invalidates any prior selection (different rows on screen).
+  clearSelection();
   try {
-    const max = parseInt($("max-emails").value, 10) || 20;
-    const { emails } = await api(`/api/emails?max=${max}`);
+    const params = new URLSearchParams({ max: pageSize, status: statusFilter });
+    const { emails } = await api(`/api/emails?${params}`);
     lastEmails = emails;
     renderList();
   } catch (e) {
@@ -200,31 +211,59 @@ async function loadEmails() {
   }
 }
 
+// Client-side filtering pipeline. Search is intentionally simple and pluggable:
+// a future AI/semantic search can replace `matchesSearch` without touching the
+// rest of the rendering flow.
+function matchesSearch(em, q) {
+  if (!q) return true;
+  const hay = `${em.subject || ""} ${em.sender_name || ""} ${em.sender_email || ""} ${em.snippet || ""}`.toLowerCase();
+  return q.split(/\s+/).filter(Boolean).every((term) => hay.includes(term));
+}
+function visibleEmails() {
+  const q = searchQuery.trim().toLowerCase();
+  return lastEmails.filter((em) =>
+    matchesSearch(em, q) &&
+    (!filterAttachments || attachmentCount(em) > 0) &&
+    (!filterNeedsReply || em.replyable)
+  );
+}
+
 function renderList() {
   const list = $("email-list");
   const empty = $("list-empty");
   list.innerHTML = "";
-  const onlyReplyable = $("only-replyable").checked;
-  const shown = onlyReplyable ? lastEmails.filter((e) => e.replyable) : lastEmails;
-  if (!lastEmails.length) { empty.textContent = "No unread emails found."; return; }
-  if (!shown.length) {
-    empty.textContent = onlyReplyable
-      ? "No emails require a response. Uncheck the filter to see all."
-      : "No emails.";
-    return;
+  const shown = visibleEmails();
+  if (!lastEmails.length) {
+    empty.textContent = "No emails found for this view.";
+  } else if (!shown.length) {
+    empty.textContent = "No emails match the current search/filters.";
+  } else {
+    empty.textContent = "";
+    shown.forEach((em) => list.appendChild(renderItem(em)));
   }
-  empty.textContent = "";
-  shown.forEach((em) => list.appendChild(renderItem(em)));
+  updateResultCount(shown.length);
+  updateSelectionUI();
+}
+
+function updateResultCount(shownCount) {
+  const el = $("result-count");
+  if (!el) return;
+  const total = lastEmails.length;
+  el.textContent = total ? (shownCount === total ? `${total} emails` : `${shownCount} of ${total}`) : "";
 }
 
 function renderItem(em) {
   const li = document.createElement("li");
-  li.className = "email-item" + (em.is_unread ? " unread" : "");
+  const isSel = selectedIds.has(em.id);
+  li.className = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "");
   li.dataset.id = em.id;
   const av = avatarFor(em);
   const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
   const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
   li.innerHTML = `
+    <label class="row-check" title="Select email">
+      <input type="checkbox" class="row-cb" ${isSel ? "checked" : ""} />
+    </label>
     <div class="avatar" style="background:${av.color}">${escapeHtml(av.text)}</div>
     <div class="email-main">
       <div class="row-top">
@@ -235,8 +274,91 @@ function renderItem(em) {
       <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
       <div class="badges">${badges.join("")}</div>
     </div>`;
+  // Checkbox toggles selection without opening the detail view.
+  const label = li.querySelector(".row-check");
+  const cb = li.querySelector(".row-cb");
+  label.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", (e) => toggleSelect(em.id, e.target.checked, li));
   li.addEventListener("click", () => selectEmail(em, li));
   return li;
+}
+
+// --- Multi-selection + bulk action bar --------------------------------------
+function toggleSelect(id, checked, li) {
+  if (checked) selectedIds.add(id); else selectedIds.delete(id);
+  if (li) li.classList.toggle("selected", checked);
+  updateSelectionUI();
+}
+
+function clearSelection() {
+  selectedIds.clear();
+  document.querySelectorAll(".email-item.selected").forEach((n) => n.classList.remove("selected"));
+  document.querySelectorAll(".row-cb:checked").forEach((cb) => { cb.checked = false; });
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  const n = selectedIds.size;
+  const bar = $("action-bar");
+  if (bar) bar.classList.toggle("hidden", n === 0);
+  const nEl = $("ab-n");
+  if (nEl) nEl.textContent = n;
+  // Reflect the visible set on the select-all checkbox (checked / indeterminate).
+  const shown = visibleEmails();
+  const shownSelected = shown.filter((e) => selectedIds.has(e.id)).length;
+  const sa = $("select-all");
+  if (sa) {
+    sa.checked = shown.length > 0 && shownSelected === shown.length;
+    sa.indeterminate = shownSelected > 0 && shownSelected < shown.length;
+  }
+}
+
+function onSelectAll(checked) {
+  const shown = visibleEmails();
+  shown.forEach((em) => { if (checked) selectedIds.add(em.id); else selectedIds.delete(em.id); });
+  document.querySelectorAll(".email-item").forEach((li) => {
+    const on = selectedIds.has(li.dataset.id);
+    li.classList.toggle("selected", on);
+    const cb = li.querySelector(".row-cb");
+    if (cb) cb.checked = on;
+  });
+  updateSelectionUI();
+}
+
+function comingSoon(name) { toast(`${name} — coming soon`, "warn"); }
+
+function setActionStatus(text) { const el = $("ab-status"); if (el) el.textContent = text || ""; }
+
+// Generate + save Gmail drafts for the selected emails. Reuses the existing
+// per-email endpoints (no new backend), so it is safe and incremental. Phase 5
+// can swap this for a dedicated server-side bulk endpoint.
+async function runSelectionDrafts() {
+  if (selectionBusy) return;
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  selectionBusy = true;
+  const btn = $("ab-generate");
+  btn.disabled = true;
+  const tone = $("d-tone") ? $("d-tone").value : (userConfig && userConfig.default_tone) || "professional";
+  const language = $("d-language") ? $("d-language").value : (userConfig && userConfig.default_language) || "auto";
+  let ok = 0, fail = 0;
+  for (let i = 0; i < ids.length; i++) {
+    setActionStatus(`Generating ${i + 1}/${ids.length}…`);
+    try {
+      const r = await api(`/api/emails/${ids[i]}/draft`, {
+        method: "POST", body: JSON.stringify({ tone, language }),
+      });
+      await api(`/api/emails/${ids[i]}/save-draft`, {
+        method: "POST", body: JSON.stringify({ draft: r.draft }),
+      });
+      ok++;
+    } catch (_) { fail++; }
+  }
+  setActionStatus("");
+  btn.disabled = false;
+  selectionBusy = false;
+  toast(`Drafts saved: ${ok}${fail ? ` · ${fail} failed` : ""}.`, fail ? "warn" : "ok");
+  loadEmails();
 }
 
 function selectEmail(em, li) {
@@ -827,7 +949,7 @@ function buildConfigPayload() {
       contains_newsletter: parseInt($("w-newsletter").value, 10) || 0,
       noreply_sender: parseInt($("w-noreply").value, 10) || 0,
     },
-    show_only_replyable: $("only-replyable").checked,
+    show_only_replyable: filterNeedsReply,
   };
 }
 
@@ -863,17 +985,43 @@ async function loadConfig() {
   } catch (_) {}
   try {
     userConfig = await api("/api/config");
-    $("only-replyable").checked = !!userConfig.show_only_replyable;
+    // "Needs reply" chip mirrors the long-standing show_only_replyable pref.
+    filterNeedsReply = !!userConfig.show_only_replyable;
+    setFilterChip("f-needsreply", filterNeedsReply);
+    if (lastEmails.length) renderList();
   } catch (_) {}
 }
 
-async function onToggleReplyable() {
+// --- Inbox controls: search, status, page size, filter chips ----------------
+function setFilterChip(id, on) {
+  const el = $(id);
+  if (el) el.classList.toggle("active", !!on);
+}
+function applyStatus(status) {
+  if (status === statusFilter) return;
+  statusFilter = status;
+  document.querySelectorAll("#status-seg .seg-btn").forEach((b) =>
+    b.classList.toggle("active", b.dataset.status === status));
+  loadEmails(); // status maps to the server query → refetch
+}
+function toggleAttachments() {
+  filterAttachments = !filterAttachments;
+  setFilterChip("f-attach", filterAttachments);
   renderList();
-  if (!userConfig) return;
-  try {
-    userConfig.show_only_replyable = $("only-replyable").checked;
-    await api("/api/config", { method: "POST", body: JSON.stringify(userConfig) });
-  } catch (_) {}
+}
+async function toggleNeedsReply() {
+  filterNeedsReply = !filterNeedsReply;
+  setFilterChip("f-needsreply", filterNeedsReply);
+  renderList();
+  if (userConfig) {
+    try {
+      userConfig.show_only_replyable = filterNeedsReply;
+      await api("/api/config", { method: "POST", body: JSON.stringify(userConfig) });
+    } catch (_) {}
+  }
+}
+function isModalOpen() {
+  return !!document.querySelector(".modal:not(.hidden)");
 }
 
 // ====================== First-run setup wizard ==============================
@@ -983,7 +1131,23 @@ $("bulk-gensave").addEventListener("click", () => requestBulk("generate_save", b
 $("bulk-gensave-all").addEventListener("click", () => requestBulk("generate_save", 100));
 $("es-cancel").addEventListener("click", () => { $("estimate-modal").classList.add("hidden"); pendingBulk = null; });
 $("es-continue").addEventListener("click", startBulk);
-$("only-replyable").addEventListener("change", onToggleReplyable);
+
+// Inbox controls (search, status, page size, filters, selection, action bar)
+$("search-box").addEventListener("input", (e) => { searchQuery = e.target.value; renderList(); });
+$("page-size").addEventListener("change", (e) => { pageSize = e.target.value; loadEmails(); });
+document.querySelectorAll("#status-seg .seg-btn").forEach((b) =>
+  b.addEventListener("click", () => applyStatus(b.dataset.status)));
+$("f-attach").addEventListener("click", toggleAttachments);
+$("f-needsreply").addEventListener("click", toggleNeedsReply);
+$("select-all").addEventListener("change", (e) => onSelectAll(e.target.checked));
+$("ab-generate").addEventListener("click", runSelectionDrafts);
+$("ab-clear").addEventListener("click", clearSelection);
+document.querySelectorAll(".ab-soon").forEach((b) =>
+  b.addEventListener("click", () => comingSoon(b.dataset.soon)));
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && selectedIds.size && !isModalOpen()) clearSelection();
+});
+setFilterChip("f-needsreply", filterNeedsReply);
 
 // Settings
 $("settings-btn").addEventListener("click", () => openSettings("ai"));

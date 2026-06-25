@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=6" />
+  <link rel="stylesheet" href="/static/style.css?v=7" />
 </head>
 <body>
   <header class="topbar">
@@ -80,10 +80,52 @@
         <div id="bulk-report" class="bulk-report hidden"></div>
       </div>
 
-      <div class="list-controls">
-        <label>Max <input id="max-emails" type="number" min="1" max="100" value="20" /></label>
-        <label class="toggle"><input id="only-replyable" type="checkbox" checked /> Show only emails requiring a response</label>
+      <div class="inbox-toolbar">
+        <div class="search-wrap">
+          <span class="search-ico">🔍</span>
+          <input id="search-box" type="search" placeholder="Search subject, sender, snippet…" autocomplete="off" />
+        </div>
+        <div class="toolbar-row">
+          <div class="seg" id="status-seg">
+            <button class="seg-btn" data-status="all">All</button>
+            <button class="seg-btn active" data-status="unread">Unread</button>
+            <button class="seg-btn" data-status="read">Read</button>
+          </div>
+          <label class="size-sel">Show
+            <select id="page-size">
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+              <option value="all">All</option>
+            </select>
+          </label>
+        </div>
+        <div class="filter-chips">
+          <button class="fchip" id="f-attach" data-filter="attachments">📎 Has attachments</button>
+          <button class="fchip" id="f-needsreply" data-filter="needsreply">↩ Needs reply</button>
+        </div>
       </div>
+
+      <div class="list-head">
+        <label class="select-all"><input id="select-all" type="checkbox" /> <span class="sa-label">Select all</span></label>
+        <span id="result-count" class="muted"></span>
+      </div>
+
+      <!-- Bulk action bar — appears only when ≥1 email is selected. -->
+      <div id="action-bar" class="action-bar hidden">
+        <span class="ab-count"><b id="ab-n">0</b> selected</span>
+        <div class="ab-actions">
+          <button id="ab-generate" class="btn small primary">Generate Draft</button>
+          <button class="btn small ab-soon" data-soon="Archive" title="Coming soon">Archive</button>
+          <button class="btn small ab-soon" data-soon="Label" title="Coming soon">Label</button>
+          <button class="btn small ab-soon" data-soon="Mark Read" title="Coming soon">Mark Read</button>
+          <button class="btn small ab-soon" data-soon="Mark Unread" title="Coming soon">Mark Unread</button>
+        </div>
+        <span id="ab-status" class="ab-status muted"></span>
+        <button id="ab-clear" class="btn small ghost">Clear</button>
+      </div>
+
       <ul id="email-list" class="email-list"></ul>
       <p id="list-empty" class="muted">Click “Load emails” to fetch your unread inbox.</p>
     </section>
@@ -464,6 +506,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>
