@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=4" />
+  <link rel="stylesheet" href="/static/style.css?v=5" />
 </head>
 <body>
   <header class="topbar">
@@ -93,6 +93,7 @@
       <div id="detail" class="detail hidden">
         <h2 id="d-subject"></h2>
         <div class="meta"><span id="d-sender"></span> · <span id="d-date"></span></div>
+        <div id="d-attachments" class="attachments hidden"></div>
 
         <div id="d-reply" class="replyability">
           <div class="reply-head">
@@ -451,6 +452,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=3"></script>
+  <script src="/static/app.js?v=4"></script>
 </body>
 </html>

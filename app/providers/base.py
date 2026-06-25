@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from app.email.attachment_detector import AttachmentInfo
+
 
 @dataclass(slots=True)
 class EmailMessage:
@@ -26,6 +28,7 @@ class EmailMessage:
     label_ids: list[str] = field(default_factory=list)
     has_attachments: bool = False
     attachment_names: list[str] = field(default_factory=list)
+    attachments: list[AttachmentInfo] = field(default_factory=list)
 
 
 @dataclass(slots=True)

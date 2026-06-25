@@ -9,7 +9,7 @@ from email.utils import parsedate_to_datetime
 
 from googleapiclient.discovery import Resource
 
-from app.email.attachment_detector import detect_attachments
+from app.email.attachment_detector import AttachmentInfo, detect_attachments
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class GmailMessage:
     label_ids: list[str]
     has_attachments: bool
     attachment_names: list[str]
+    attachments: list[AttachmentInfo]
 
 
 @dataclass(slots=True)
@@ -167,6 +168,7 @@ class GmailReader:
             label_ids=[str(v) for v in payload.get("labelIds", [])],
             has_attachments=attachment_meta.has_attachments,
             attachment_names=attachment_meta.filenames,
+            attachments=list(attachment_meta.attachments),
         )
 
     def get_message(self, message_id: str) -> GmailMessage:

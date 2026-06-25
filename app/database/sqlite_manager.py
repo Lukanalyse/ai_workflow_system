@@ -5,6 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+# SQLite caps the number of bound variables per statement (default 999). Stay
+# well under it when expanding ``IN (...)`` clauses for large inbox listings.
+_SQL_VAR_CHUNK = 500
+
+
+def _chunks(items: list[str], size: int = _SQL_VAR_CHUNK):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
 
 @dataclass(slots=True)
 class ProcessedEmailRecord:
@@ -248,6 +257,81 @@ class SQLiteManager:
                 (sender,),
             ).fetchone()
         return row is not None
+
+    def seen_status_bulk(
+        self, message_ids: list[str], thread_ids: list[str]
+    ) -> tuple[set[str], set[str]]:
+        """Bulk variant of :meth:`already_processed_gmail` for a whole list.
+
+        Returns ``(seen_message_ids, threads_with_draft)`` so the caller can
+        decide ``seen = id in seen_message_ids or thread_id in threads`` in
+        memory — replacing N per-email queries with two batched ones. The
+        per-email semantics are preserved exactly: a message counts as seen
+        when a draft was created for it or its status is processed/skipped, and
+        a thread counts when any of its rows already produced a draft.
+        """
+        ids = [m for m in dict.fromkeys(message_ids) if m]
+        threads = [t for t in dict.fromkeys(thread_ids) if t]
+        seen_messages: set[str] = set()
+        draft_threads: set[str] = set()
+        if not ids and not threads:
+            return seen_messages, draft_threads
+        with self._connect() as conn:
+            for chunk in _chunks(ids):
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT message_id, processed_status, draft_created
+                    FROM gmail_processed_emails
+                    WHERE message_id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    if bool(row["draft_created"]) or str(row["processed_status"]) in {
+                        "processed",
+                        "skipped",
+                    }:
+                        seen_messages.add(str(row["message_id"]))
+            for chunk in _chunks(threads):
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT thread_id
+                    FROM gmail_processed_emails
+                    WHERE draft_created = 1 AND thread_id IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    draft_threads.add(str(row["thread_id"]))
+        return seen_messages, draft_threads
+
+    def known_senders(self, sender_emails: list[str]) -> set[str]:
+        """Return the subset of senders we have ever processed (lowercased).
+
+        Bulk variant of :meth:`sender_seen` — one query per chunk instead of one
+        per email.
+        """
+        senders = [s.strip().lower() for s in sender_emails if (s or "").strip()]
+        senders = list(dict.fromkeys(senders))
+        known: set[str] = set()
+        if not senders:
+            return known
+        with self._connect() as conn:
+            for chunk in _chunks(senders):
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT LOWER(sender) AS sender
+                    FROM gmail_processed_emails
+                    WHERE LOWER(sender) IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    known.add(str(row["sender"]))
+        return known
 
     def save_gmail_processed_email(self, record: GmailProcessedEmailRecord) -> None:
         with self._connect() as conn:

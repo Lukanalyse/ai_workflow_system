@@ -77,12 +77,28 @@ body {
 }
 .email-item:hover { border-color: var(--accent); }
 .email-item.active { border-color: var(--accent); background: #f5f8ff; }
-.email-item .subj { font-weight: 600; font-size: 14px; }
+.email-item .row-top { display: flex; align-items: baseline; gap: 8px; }
+.email-item .subj { font-weight: 500; font-size: 14px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.email-item .date { font-size: 11px; color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .email-item .from { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .email-item .badges { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
+/* Unread emails read at a glance: tinted card, accent rail, bolder header. */
+.email-item.unread { background: #f7faff; border-left: 3px solid var(--accent); }
+.email-item.unread .subj { font-weight: 700; color: var(--text); }
+.email-item.unread .from { color: #475569; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: #eef0f3; color: var(--muted); }
 .badge.skip { background: #fef2f2; color: var(--err); }
 .badge.seen { background: #fffbeb; color: var(--warn); }
+.badge.attach { background: #eef2ff; color: var(--accent-d); }
+
+/* Attachment chips (read pane). Metadata only — no preview/download yet. */
+.attachments { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 4px; }
+.attach-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--text); background: #f1f5f9;
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px;
+}
+.attach-chip .att-size { color: var(--muted); }
 
 .detail { display: flex; flex-direction: column; gap: 12px; }
 .detail h2 { margin: 0; font-size: 18px; }

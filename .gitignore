@@ -7,8 +7,8 @@ token*.json
 *.pem
 *.key
 
-# OAuth token storage (multi-account)
-storage/tokens/
+# OAuth token storage + transient OAuth state (never commit any runtime state)
+storage/
 
 # Google credentials
 credentials/

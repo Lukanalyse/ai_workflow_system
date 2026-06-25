@@ -33,6 +33,56 @@ function fmtNum(n) { return (Number(n) || 0).toLocaleString("en-US"); }
 function fmtMoney(n) { return "$" + (Number(n) || 0).toFixed(2); }
 function fmtMoney4(n) { return "$" + (Number(n) || 0).toFixed(4); }
 
+// Compact, Gmail-style relative date: "now", "12m", "5h", "Mar 3", "Mar 3 2025".
+function fmtRelativeDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const now = new Date();
+  const min = Math.round((now - d) / 60000);
+  if (min < 1) return "now";
+  if (min < 60) return min + "m";
+  const hr = Math.round(min / 60);
+  if (hr < 24) return hr + "h";
+  const sameYear = d.getFullYear() === now.getFullYear();
+  return d.toLocaleDateString("en-US",
+    sameYear ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
+}
+
+// --- Attachments (metadata only; content is never downloaded) ---------------
+function attachmentCount(em) {
+  return (em.attachments || []).length || (em.has_attachments ? 1 : 0);
+}
+function attachIcon(mime, name) {
+  const m = (mime || "").toLowerCase();
+  const n = (name || "").toLowerCase();
+  if (m.includes("pdf") || n.endsWith(".pdf")) return "📄";
+  if (m.startsWith("image/") || /\.(png|jpe?g|gif|webp|heic|svg)$/.test(n)) return "📷";
+  if (m.includes("sheet") || m.includes("excel") || m.includes("csv") || /\.(xlsx?|csv)$/.test(n)) return "📊";
+  if (m.includes("word") || m.includes("document") || /\.(docx?)$/.test(n)) return "📝";
+  if (m.includes("zip") || m.includes("compress") || /\.(zip|rar|7z|tar|gz)$/.test(n)) return "🗜️";
+  return "📎";
+}
+function fmtSize(bytes) {
+  bytes = Number(bytes) || 0;
+  if (!bytes) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+function renderAttachments(el, attachments) {
+  if (!el) return;
+  attachments = attachments || [];
+  if (!attachments.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  el.classList.remove("hidden");
+  el.innerHTML = attachments.map((a) => {
+    const size = fmtSize(a.size);
+    return `<span class="attach-chip" title="${escapeHtml(a.mime_type || "")}">` +
+      `${attachIcon(a.mime_type, a.name)} ${escapeHtml(a.name)}` +
+      `${size ? ` <span class="att-size">· ${size}</span>` : ""}</span>`;
+  }).join("");
+}
+
 // --- Toast notifications ----------------------------------------------------
 let toastTimer = null;
 function toast(msg, kind = "ok") {
@@ -122,13 +172,17 @@ function renderList() {
 
 function renderItem(em) {
   const li = document.createElement("li");
-  li.className = "email-item";
+  li.className = "email-item" + (em.is_unread ? " unread" : "");
   li.dataset.id = em.id;
   const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`];
   if (em.already_processed) badges.push(`<span class="badge seen">already handled</span>`);
-  if (em.has_attachments) badges.push(`<span class="badge">attachment</span>`);
+  const nAtt = attachmentCount(em);
+  if (nAtt) badges.push(`<span class="badge attach">📎 ${nAtt}</span>`);
   li.innerHTML = `
-    <div class="subj">${escapeHtml(em.subject)}</div>
+    <div class="row-top">
+      <span class="subj">${escapeHtml(em.subject)}</span>
+      <span class="date" title="${escapeHtml(new Date(em.received_at).toLocaleString())}">${escapeHtml(fmtRelativeDate(em.received_at))}</span>
+    </div>
     <div class="from">${escapeHtml(em.sender_name || em.sender_email)}</div>
     <div class="badges">${badges.join("")}</div>`;
   li.addEventListener("click", () => selectEmail(em, li));
@@ -144,6 +198,7 @@ function selectEmail(em, li) {
   $("d-subject").textContent = em.subject;
   $("d-sender").textContent = em.sender_name ? `${em.sender_name} <${em.sender_email}>` : em.sender_email;
   $("d-date").textContent = new Date(em.received_at).toLocaleString();
+  renderAttachments($("d-attachments"), em.attachments);
   $("d-snippet").textContent = em.snippet;
   $("d-score").textContent = em.score;
   const cls = $("d-class");

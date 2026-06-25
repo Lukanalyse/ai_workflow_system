@@ -34,6 +34,7 @@ def _to_email_message(msg: GmailMessage) -> EmailMessage:
         label_ids=list(msg.label_ids),
         has_attachments=msg.has_attachments,
         attachment_names=list(msg.attachment_names),
+        attachments=list(msg.attachments),
     )
 
 
