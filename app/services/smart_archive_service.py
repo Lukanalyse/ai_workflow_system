@@ -74,43 +74,55 @@ class ArchiveResult:
 
 
 class SmartArchiveService:
-    def __init__(self, *, resolver: FilingResolver, mailbox: MailboxService) -> None:
+    def __init__(
+        self, *, resolver: FilingResolver, mailbox: MailboxService, learning=None, clock=None
+    ) -> None:
         self._resolver = resolver
         self._mailbox = mailbox
+        self._learning = learning  # optional LearningStore (records on execute)
+        from app.database.sqlite_manager import SQLiteManager
 
-    def plan(self, refs: list[EmailRef]) -> ArchivePlan:
-        """Group emails by their decided label (rules + cache only — no LLM)."""
+        self._now = clock or SQLiteManager.now_iso
+
+    def _grouped(self, refs: list[EmailRef]):
+        """Decide every ref and group ids by label. Returns
+        (refs, decisions, undecided, groups) where groups[label] = {ids, sources}."""
         refs = _dedupe(refs)
         decisions, undecided = self._resolver.decide_many(refs)
-        groups: dict[str, list[str]] = {}
-        sources: dict[str, set[str]] = {}
+        groups: dict[str, dict] = {}
         for ref in refs:
             decision = decisions.get(ref.id)
             if decision is None:
                 continue
             label = (decision.label or "Other").strip() or "Other"
-            groups.setdefault(label, []).append(ref.id)
-            sources.setdefault(label, set()).add(decision.source)
+            decision.label = label
+            group = groups.setdefault(label, {"ids": [], "sources": set()})
+            group["ids"].append(ref.id)
+            group["sources"].add(decision.source)
+        return refs, decisions, undecided, groups
+
+    def plan(self, refs: list[EmailRef]) -> ArchivePlan:
+        """Group emails by their decided label (rules + learning + cache — no LLM)."""
+        refs, _decisions, undecided, groups = self._grouped(refs)
         items = [
             ArchivePlanItem(
                 label=label,
-                message_ids=mids,
-                source="rule" if sources.get(label) == {"rule"} else
-                ("ai" if sources.get(label) == {"ai"} else "mixed"),
+                message_ids=g["ids"],
+                source=next(iter(g["sources"])) if len(g["sources"]) == 1 else "mixed",
             )
-            for label, mids in groups.items()
+            for label, g in groups.items()
         ]
         items.sort(key=lambda i: (-i.count, i.label.lower()))
         return ArchivePlan(items=items, total_selected=len(refs), undecided_ids=undecided)
 
     def execute(self, refs: list[EmailRef]) -> ArchiveResult:
-        """Create-if-needed + apply label + archive each group."""
-        plan = self.plan(refs)
-        if not plan.items:
+        """Create-if-needed + apply label + archive each group, then learn from it."""
+        refs, decisions, undecided, groups = self._grouped(refs)
+        if not groups:
             return ArchiveResult(
-                archived=0, labels_created=[], by_label={},
-                needs_analysis=len(plan.undecided_ids),
+                archived=0, labels_created=[], by_label={}, needs_analysis=len(undecided)
             )
+        sender_by_id = {r.id: r.sender for r in refs}
 
         # One labels listing; reuse existing (case-insensitive), create missing once.
         # A missing-scope error surfaces here, before any change is made.
@@ -120,42 +132,62 @@ class SmartArchiveService:
         failures: list[dict] = []
         archived = 0
 
-        for item in plan.items:
+        for label, group in sorted(groups.items(), key=lambda kv: (-len(kv[1]["ids"]), kv[0].lower())):
+            ids = group["ids"]
             try:
-                key = item.label.lower()
+                key = label.lower()
                 label_id = existing.get(key)
                 if label_id is None:
-                    new_label = self._mailbox.create_label(item.label)
+                    new_label = self._mailbox.create_label(label)
                     label_id = new_label["id"]
                     existing[key] = label_id
-                    created.append(item.label)
+                    created.append(label)
                 # Atomic per group: add label + remove INBOX in one batchModify.
-                result = self._mailbox.apply_label(
-                    item.message_ids, label_id=label_id, archive=True
-                )
-                by_label[item.label] = result.modified
+                result = self._mailbox.apply_label(ids, label_id=label_id, archive=True)
+                by_label[label] = result.modified
                 archived += result.modified
                 if result.failures:
-                    failures.append({"label": item.label, "error": result.failures})
+                    failures.append({"label": label, "error": result.failures})
+                else:
+                    self._learn(ids, decisions, sender_by_id)
             except PermissionError:
                 raise  # missing/expired modify scope -> web layer answers 403
             except Exception as exc:  # noqa: BLE001 - isolate a failing label group
-                logger.exception("Smart archive failed for label %r", item.label)
-                failures.append(
-                    {"label": item.label, "message_ids": item.message_ids, "error": str(exc)}
-                )
+                logger.exception("Smart archive failed for label %r", label)
+                failures.append({"label": label, "message_ids": ids, "error": str(exc)})
 
         logger.info(
             "Smart archive: %d archived across %d label(s), %d created, %d need analysis, %d failed",
-            archived, len(by_label), len(created), len(plan.undecided_ids), len(failures),
+            archived, len(by_label), len(created), len(undecided), len(failures),
         )
         return ArchiveResult(
             archived=archived,
             labels_created=created,
             by_label=by_label,
-            needs_analysis=len(plan.undecided_ids),
+            needs_analysis=len(undecided),
             failures=failures,
         )
+
+    def _learn(self, ids: list[str], decisions: dict, sender_by_id: dict) -> None:
+        """Record each successfully-filed email so the engine learns the habit."""
+        if self._learning is None:
+            return
+        when = self._now()
+        for mid in ids:
+            decision = decisions.get(mid)
+            if decision is None:
+                continue
+            try:
+                self._learning.record(
+                    message_id=mid,
+                    sender=sender_by_id.get(mid, ""),
+                    label=decision.label,
+                    source=decision.source,
+                    confidence=decision.confidence,
+                    when=when,
+                )
+            except Exception:  # noqa: BLE001 - learning must never break filing
+                logger.exception("Failed to record filing history for %s", mid)
 
 
 def _dedupe(refs: list[EmailRef]) -> list[EmailRef]:

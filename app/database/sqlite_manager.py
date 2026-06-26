@@ -189,8 +189,27 @@ class SQLiteManager:
                 )
                 """
             )
+            # Filing history — one row per filed email. Feeds the Learning
+            # Engine (sender/domain -> label habits) and makes every decision
+            # retrievable.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS filing_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL,
+                    sender TEXT NOT NULL DEFAULT '',
+                    domain TEXT NOT NULL DEFAULT '',
+                    label TEXT NOT NULL,
+                    source TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_filing_sender ON filing_history(sender)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_filing_domain ON filing_history(domain)")
             # Schema version marker for future migrations (idempotent set).
-            conn.execute("PRAGMA user_version = 2")
+            conn.execute("PRAGMA user_version = 3")
             conn.commit()
 
     def already_processed(self, message_id: str) -> bool:
@@ -645,6 +664,79 @@ class SQLiteManager:
                 for row in rows:
                     out[str(row["message_id"])] = self._row_to_analysis(row)
         return out
+
+    # --- Filing history / learning ------------------------------------------
+    def record_filing(
+        self,
+        *,
+        message_id: str,
+        sender: str,
+        domain: str,
+        label: str,
+        source: str,
+        confidence: float,
+        created_at: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO filing_history (
+                    message_id, sender, domain, label, source, confidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (message_id, sender, domain, label, source, float(confidence), created_at),
+            )
+            conn.commit()
+
+    def filing_label_counts_for_sender(self, sender: str) -> dict[str, int]:
+        s = (sender or "").strip().lower()
+        if not s:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT label, COUNT(*) AS n FROM filing_history
+                WHERE sender = ? GROUP BY label
+                """,
+                (s,),
+            ).fetchall()
+        return {str(r["label"]): int(r["n"]) for r in rows}
+
+    def filing_label_counts_for_domain(self, domain: str) -> dict[str, int]:
+        d = (domain or "").strip().lower()
+        if not d:
+            return {}
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT label, COUNT(*) AS n FROM filing_history
+                WHERE domain = ? GROUP BY label
+                """,
+                (d,),
+            ).fetchall()
+        return {str(r["label"]): int(r["n"]) for r in rows}
+
+    def recent_filing_history(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, sender, domain, label, source, confidence, created_at
+                FROM filing_history ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "message_id": str(r["message_id"]),
+                "sender": str(r["sender"]),
+                "domain": str(r["domain"]),
+                "label": str(r["label"]),
+                "source": str(r["source"]),
+                "confidence": float(r["confidence"]),
+                "created_at": str(r["created_at"]),
+            }
+            for r in rows
+        ]
 
     @staticmethod
     def now_iso() -> str:

@@ -32,6 +32,7 @@ from app.services.draft_service import DraftService
 from app.services.email_analysis_service import EmailAnalysisService, SQLiteAnalysisCache
 from app.services.email_service import EmailService
 from app.services.filing_engine import EmailRef, FilingResolver, RulesEngine
+from app.services.learning_engine import LearningStore
 from app.services.llm_service import LLMService
 from app.services.mailbox_service import MailboxService
 from app.services.smart_archive_service import SmartArchiveService
@@ -136,12 +137,15 @@ class ServiceContainer:
                 llm_service=self.llm_service,
                 cache=SQLiteAnalysisCache(self.sqlite),
             )
+            learning = LearningStore(self.sqlite)
             self.smart_archive_service = SmartArchiveService(
                 resolver=FilingResolver(
                     rules=RulesEngine(),
                     analysis_cache=self.analysis_service,
+                    learning=learning,
                 ),
                 mailbox=self.mailbox_service,
+                learning=learning,
             )
             # Re-validate using the live settings paths (custom locations).
             self.fs_issues = check_critical_paths(settings)
@@ -573,6 +577,18 @@ def smart_archive_execute(body: SmartArchiveRequest) -> dict:
         "smart_archive",
         lambda: container.smart_archive_service.execute(_to_refs(body)).as_dict(),
     )
+
+
+@app.get("/api/filing/history")
+def filing_history(limit: int = 50) -> dict:
+    """Recent filing decisions — every decision is retrievable (feeds learning)."""
+    _require_ready()
+    try:
+        limit = max(1, min(int(limit), 500))
+        return {"history": container.sqlite.recent_filing_history(limit=limit)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to read filing history")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/labels")

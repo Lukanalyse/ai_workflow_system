@@ -94,20 +94,28 @@ class FilingResolver:
     the cache. Undecided emails are returned so the caller can choose to analyze.
     """
 
-    def __init__(self, *, rules: RulesEngine, analysis_cache) -> None:
+    def __init__(self, *, rules: RulesEngine, analysis_cache, learning=None) -> None:
         self._rules = rules
         self._cache = analysis_cache
+        self._learning = learning  # optional LearningStore (6B)
 
     def decide_many(self, refs: list[EmailRef]) -> tuple[dict[str, FilingDecision], list[str]]:
         decisions: dict[str, FilingDecision] = {}
         undecided: list[str] = []
-        # Look up cached analyses once for the ids not already settled by a rule.
+        # Look up cached analyses once for the ids not settled by a rule/learning.
         ai = self._cache.get_cached_many([r.id for r in refs])
         for ref in refs:
             rule = self._rules.match(ref.sender)
             if rule is not None:
                 decisions[ref.id] = FilingDecision(label=rule.label, confidence=1.0, source="rule")
                 continue
+            if self._learning is not None:
+                learned = self._learning.learned_label(ref.sender)
+                if learned is not None:
+                    decisions[ref.id] = FilingDecision(
+                        label=learned.label, confidence=learned.confidence, source="learned"
+                    )
+                    continue
             analysis = ai.get(ref.id)
             if analysis is not None:
                 decisions[ref.id] = FilingDecision(
