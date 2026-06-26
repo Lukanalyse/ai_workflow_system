@@ -33,6 +33,9 @@ class EmailCandidate:
     score: int
     classification: str
     reasons: list[str]
+    # Cached AI analysis (read-only; never triggers an LLM call here). None when
+    # the email has not been analyzed yet.
+    ai: dict | None
 
 
 class EmailService:
@@ -63,6 +66,8 @@ class EmailService:
             [m.id for m in messages], [m.thread_id for m in messages]
         )
         known_senders = self._sqlite.known_senders([m.sender_email for m in messages])
+        # Attach any cached AI analysis (read-only; no LLM call) in one query.
+        analyses = self._sqlite.get_email_analysis_many([m.id for m in messages])
 
         candidates: list[EmailCandidate] = []
         for msg in messages:
@@ -91,6 +96,7 @@ class EmailService:
                     score=result.score,
                     classification=result.classification,
                     reasons=result.reasons,
+                    ai=analyses.get(msg.id),
                 )
             )
         logger.info("Listed %d email candidates", len(candidates))

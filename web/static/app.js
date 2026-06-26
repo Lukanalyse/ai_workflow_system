@@ -118,13 +118,17 @@ function avatarFor(em) {
   for (let i = 0; i < email.length; i++) h = (h * 31 + email.charCodeAt(i)) >>> 0;
   return { text: initialsFor(em.sender_name, em.sender_email), color: AVATAR_COLORS[h % AVATAR_COLORS.length] };
 }
-// Importance dot. Colored when a level is known (Phase 6); a neutral placeholder
-// otherwise, so the slot already exists in the layout.
+// Priority dot, driven by the cached AI analysis (em.ai.priority). Neutral
+// placeholder until the email has been analyzed.
 function importanceDot(em) {
-  const lvl = String(em.importance || "").toLowerCase();
-  const cls = lvl === "high" ? "high" : (lvl === "medium" || lvl === "med") ? "med" : lvl === "low" ? "low" : "none";
-  const title = lvl ? `Importance: ${lvl}` : "Importance — coming soon";
+  const lvl = String((em.ai && em.ai.priority) || "").toLowerCase();
+  const cls = lvl === "critical" ? "crit" : lvl === "high" ? "high"
+    : lvl === "medium" ? "med" : lvl === "low" ? "low" : "none";
+  const title = lvl ? `Priority: ${em.ai.priority}` : "Not analyzed yet";
   return `<span class="imp-dot imp-${cls}" title="${escapeHtml(title)}"></span>`;
+}
+function categorySlug(name) {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 // Non-score metadata badges shared by the list rows and the read pane.
 function metaBadges(em) {
@@ -132,9 +136,9 @@ function metaBadges(em) {
   if (em.already_processed) out.push(`<span class="badge seen">handled</span>`);
   const nAtt = attachmentCount(em);
   if (nAtt) out.push(`<span class="badge attach">📎 ${nAtt}</span>`);
-  if (em.category) {
-    const slug = String(em.category).toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    out.push(`<span class="badge cat cat-${escapeHtml(slug)}">${escapeHtml(em.category)}</span>`);
+  const category = em.ai && em.ai.category;
+  if (category) {
+    out.push(`<span class="badge cat cat-${escapeHtml(categorySlug(category))}">${escapeHtml(category)}</span>`);
   }
   return out;
 }
@@ -435,6 +439,58 @@ async function applyLabel() {
   }
 }
 
+// --- AI analysis card (read pane) -------------------------------------------
+// On-demand only; never auto-runs (cost control) and never modifies Gmail.
+function renderAiSection(em) {
+  const wrap = $("d-ai-wrap");
+  if (!wrap) return;
+  const a = em.ai;
+  if (!a) {
+    wrap.innerHTML =
+      `<div class="ai-empty">` +
+      `<span class="muted">No AI analysis yet — understand this email in one click.</span>` +
+      `<button id="d-analyze" class="btn small primary">✨ Analyze with AI</button></div>`;
+    $("d-analyze").addEventListener("click", () => analyzeCurrent(false));
+    return;
+  }
+  const conf = Math.round((Number(a.confidence) || 0) * 100);
+  const prioCls = "prio-" + String(a.priority || "").toLowerCase();
+  const catCls = "cat-" + categorySlug(a.category);
+  wrap.innerHTML =
+    `<div class="ai-card">
+      <div class="ai-head"><span>✨ AI Analysis</span><span class="ai-conf" title="Model confidence">${conf}%</span></div>
+      <div class="ai-grid">
+        <div class="ai-row"><span class="ai-k">Category</span><span class="badge cat ${catCls}">${escapeHtml(a.category)}</span></div>
+        <div class="ai-row"><span class="ai-k">Priority</span><span class="prio ${prioCls}">${escapeHtml(a.priority)}</span></div>
+        <div class="ai-row"><span class="ai-k">Reply</span><span>${a.needs_reply ? "Recommended" : "Not needed"}</span></div>
+        <div class="ai-row"><span class="ai-k">Action</span><span>${escapeHtml(a.action_recommended)}</span></div>
+      </div>
+      <div class="ai-summary"><span class="ai-k">Summary</span><p>${escapeHtml(a.summary || "—")}</p></div>
+      <div class="ai-foot"><span class="muted">Read-only${a.model ? " · " + escapeHtml(a.model) : ""}</span>` +
+      `<button id="d-reanalyze" class="link-btn">Re-analyze</button></div>
+    </div>`;
+  const rb = $("d-reanalyze");
+  if (rb) rb.addEventListener("click", () => analyzeCurrent(true));
+}
+
+async function analyzeCurrent(force) {
+  if (!selected) return;
+  const wrap = $("d-ai-wrap");
+  wrap.innerHTML = `<div class="ai-card"><div class="ai-head"><span>✨ AI Analysis</span></div><p class="muted">Analyzing…</p></div>`;
+  try {
+    const a = await api(`/api/emails/${selected.id}/analyze${force ? "?force=true" : ""}`, { method: "POST" });
+    selected.ai = a;
+    const row = lastEmails.find((e) => e.id === selected.id);
+    if (row) row.ai = a;
+    renderAiSection(selected);
+    renderList(); // surface category/priority on the list row
+    toast("Email analyzed.");
+  } catch (e) {
+    renderAiSection(selected);
+    toast("Analysis failed: " + e.message, "error");
+  }
+}
+
 // Quick actions for the currently-open email (operate on a single id).
 function renderDetailActions(em) {
   const el = $("d-actions");
@@ -505,6 +561,7 @@ function selectEmail(em, li) {
   const statusBadge = `<span class="badge ${em.is_unread ? "unread-badge" : "read-badge"}">${em.is_unread ? "Unread" : "Read"}</span>`;
   $("d-badges").innerHTML = importanceDot(em) + statusBadge + metaBadges(em).join("");
   renderDetailActions(em);
+  renderAiSection(em);
   renderAttachments($("d-attachments"), em.attachments);
   $("d-snippet").textContent = em.snippet;
   $("d-score").textContent = em.score;

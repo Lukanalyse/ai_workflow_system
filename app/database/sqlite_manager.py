@@ -172,8 +172,25 @@ class SQLiteManager:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_usage_events_ts ON usage_events(timestamp)"
             )
+            # Cache of the AI understanding layer — one row per analyzed message.
+            # Keyed by message_id so an email is never re-analyzed unnecessarily.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_ai_analysis (
+                    message_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'Other',
+                    priority TEXT NOT NULL DEFAULT 'Medium',
+                    needs_reply INTEGER NOT NULL DEFAULT 0,
+                    action_recommended TEXT NOT NULL DEFAULT 'Other',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    model TEXT NOT NULL DEFAULT '',
+                    analyzed_at TEXT NOT NULL
+                )
+                """
+            )
             # Schema version marker for future migrations (idempotent set).
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute("PRAGMA user_version = 2")
             conn.commit()
 
     def already_processed(self, message_id: str) -> bool:
@@ -558,6 +575,76 @@ class SQLiteManager:
                 (since_iso,),
             ).fetchone()
         return float(row["cost"])
+
+    # --- AI analysis cache ---------------------------------------------------
+    @staticmethod
+    def _row_to_analysis(row: sqlite3.Row) -> dict:
+        return {
+            "summary": str(row["summary"]),
+            "category": str(row["category"]),
+            "priority": str(row["priority"]),
+            "needs_reply": bool(row["needs_reply"]),
+            "action_recommended": str(row["action_recommended"]),
+            "confidence": float(row["confidence"]),
+            "model": str(row["model"]),
+            "analyzed_at": str(row["analyzed_at"]),
+        }
+
+    def save_email_analysis(self, message_id: str, analysis: dict) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO email_ai_analysis (
+                    message_id, summary, category, priority, needs_reply,
+                    action_recommended, confidence, model, analyzed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    category = excluded.category,
+                    priority = excluded.priority,
+                    needs_reply = excluded.needs_reply,
+                    action_recommended = excluded.action_recommended,
+                    confidence = excluded.confidence,
+                    model = excluded.model,
+                    analyzed_at = excluded.analyzed_at
+                """,
+                (
+                    message_id,
+                    str(analysis.get("summary", "")),
+                    str(analysis.get("category", "Other")),
+                    str(analysis.get("priority", "Medium")),
+                    int(bool(analysis.get("needs_reply", False))),
+                    str(analysis.get("action_recommended", "Other")),
+                    float(analysis.get("confidence", 0.0)),
+                    str(analysis.get("model", "")),
+                    str(analysis.get("analyzed_at", "")),
+                ),
+            )
+            conn.commit()
+
+    def get_email_analysis(self, message_id: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM email_ai_analysis WHERE message_id = ? LIMIT 1",
+                (message_id,),
+            ).fetchone()
+        return self._row_to_analysis(row) if row is not None else None
+
+    def get_email_analysis_many(self, message_ids: list[str]) -> dict[str, dict]:
+        ids = [m for m in dict.fromkeys(message_ids) if m]
+        out: dict[str, dict] = {}
+        if not ids:
+            return out
+        with self._connect() as conn:
+            for chunk in _chunks(ids):
+                placeholders = ",".join("?" * len(chunk))
+                rows = conn.execute(
+                    f"SELECT * FROM email_ai_analysis WHERE message_id IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    out[str(row["message_id"])] = self._row_to_analysis(row)
+        return out
 
     @staticmethod
     def now_iso() -> str:

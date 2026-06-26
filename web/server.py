@@ -29,6 +29,7 @@ from app.security.fs_validation import (
 from app.services.bulk_service import BULK_MAX, BulkService
 from app.services.cost_service import CostService
 from app.services.draft_service import DraftService
+from app.services.email_analysis_service import EmailAnalysisService, SQLiteAnalysisCache
 from app.services.email_service import EmailService
 from app.services.llm_service import LLMService
 from app.services.mailbox_service import MailboxService
@@ -71,13 +72,14 @@ class ServiceContainer:
         self.draft_service: DraftService | None = None
         self.bulk_service: BulkService | None = None
         self.mailbox_service: MailboxService | None = None
+        self.analysis_service: EmailAnalysisService | None = None
         self.reload()
 
     def _teardown(self) -> None:
         for attr in (
             "settings", "sqlite", "provider", "cost_service", "user_config_store",
             "user_config", "scorer", "llm_service", "email_service",
-            "draft_service", "bulk_service", "mailbox_service",
+            "draft_service", "bulk_service", "mailbox_service", "analysis_service",
         ):
             setattr(self, attr, None)
 
@@ -126,6 +128,10 @@ class ServiceContainer:
                 draft_service=self.draft_service,
             )
             self.mailbox_service = MailboxService(self.provider)
+            self.analysis_service = EmailAnalysisService(
+                llm_service=self.llm_service,
+                cache=SQLiteAnalysisCache(self.sqlite),
+            )
             # Re-validate using the live settings paths (custom locations).
             self.fs_issues = check_critical_paths(settings)
             self.degraded = has_blocking(self.fs_issues)
@@ -341,6 +347,19 @@ def generate_draft(message_id: str, body: DraftRequest) -> dict:
         logger.exception("Failed to generate draft for %s", message_id)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"summary": result.summary, "draft": result.draft}
+
+
+@app.post("/api/emails/{message_id}/analyze")
+def analyze_email(message_id: str, force: bool = False) -> dict:
+    """Run (or return cached) AI analysis for one email. Never modifies Gmail."""
+    _require_ready()
+    try:
+        email = container.email_service.get_message(message_id)
+        analysis = container.analysis_service.analyze(email, force=force)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to analyze %s", message_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return analysis.as_dict()
 
 
 @app.post("/api/emails/{message_id}/save-draft")

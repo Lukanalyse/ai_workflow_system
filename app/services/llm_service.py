@@ -9,6 +9,7 @@ from app.config.user_config import UserConfig
 from app.database.sqlite_manager import SQLiteManager, UsageEventRecord
 from app.email.clean_email import prepare_untrusted_email_for_llm
 from app.llm.base import LLMResult
+from app.llm.email_analysis import EmailAnalysis, build_analyze_prompts, parse_analysis
 from app.llm.prompt_loader import PromptLoader
 from app.llm.provider import build_llm_client
 from app.providers.base import EmailMessage
@@ -109,6 +110,24 @@ class LLMService:
         )
         self._record(result, operation="summarize", email_id=email.id, run_id=run_id)
         return result.text
+
+    def analyze_email(self, email: EmailMessage, *, run_id: str | None = None) -> EmailAnalysis:
+        """One LLM call producing the unified understanding-layer structure.
+
+        The body is wrapped as untrusted input (same as every other call) and
+        token usage is recorded under the ``analyze`` operation.
+        """
+        system, user = build_analyze_prompts(
+            subject=email.subject,
+            sender=email.sender_email,
+            attachments=email.attachment_names,
+            body=self._prepare_body(email),
+        )
+        result = self._client.complete(
+            system_prompt=system, user_prompt=user, max_tokens=self._settings.llm.max_tokens
+        )
+        self._record(result, operation="analyze", email_id=email.id, run_id=run_id)
+        return parse_analysis(result.text, model=result.model)
 
     def _resolve_language(self, language: str | None) -> str:
         code = (language or self._user_config.default_language or "auto").strip().lower()
