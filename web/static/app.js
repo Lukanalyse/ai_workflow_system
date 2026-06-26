@@ -504,31 +504,86 @@ async function openSmartArchive(ids) {
   $("smart-cancel").textContent = "Cancel";
   $("smart-confirm").classList.remove("hidden");
   $("smart-confirm").disabled = true;
-  $("smart-body").innerHTML = `<p class="muted">Planning…</p>`;
   $("smart-modal").classList.remove("hidden");
+  await reRunPreview();
+}
+
+// Selected emails that have no cached analysis yet (resolved from the list,
+// whose rows carry the cached analysis). The user never sees "cache" — these
+// are simply the ones "Analyze & Continue" will handle for them.
+function unanalyzedSelectedIds() {
+  return smartTargetIds.filter((id) => {
+    const em = lastEmails.find((e) => e.id === id);
+    return em && !em.ai;
+  });
+}
+
+async function reRunPreview() {
+  $("smart-body").innerHTML = `<p class="muted">Planning…</p>`;
   try {
     const plan = await api("/api/smart-archive/preview", {
-      method: "POST", body: JSON.stringify({ message_ids: ids }),
+      method: "POST", body: JSON.stringify({ message_ids: smartTargetIds }),
     });
     renderSmartPlan(plan);
   } catch (e) {
     $("smart-body").innerHTML = `<p class="warn-box">${escapeHtml(e.message)}</p>`;
   }
 }
+
 function renderSmartPlan(plan) {
   const body = $("smart-body");
-  const skipped = plan.skipped_unanalyzed
-    ? `<p class="muted plan-note">${plan.skipped_unanalyzed} not analyzed — skipped. Analyze them first to file them.</p>`
+  const confirm = $("smart-confirm");
+  confirm.classList.remove("hidden");
+  const unanalyzed = unanalyzedSelectedIds();
+  const rows = (plan.items || []).map((i) => planRow(i.label, i.count)).join("");
+  const planBlock = plan.analyzed
+    ? `<p class="muted">${plan.analyzed} email(s) ready to file:</p><div class="plan-list">${rows}</div>`
     : "";
-  if (!plan.analyzed) {
-    body.innerHTML = `<p>None of the selected emails are analyzed yet.</p>${skipped}`;
-    $("smart-confirm").classList.add("hidden");
+
+  if (unanalyzed.length) {
+    // Offer to do the analysis inline — one click, no dead-end.
+    body.innerHTML = planBlock +
+      `<p class="muted plan-note">${unanalyzed.length} email(s) need a quick AI pass first — ` +
+      `“Analyze &amp; Continue” will handle it automatically.</p>`;
+    confirm.textContent = "Analyze & Continue";
+    confirm.dataset.mode = "analyze";
+    confirm.disabled = false;
     return;
   }
-  const rows = (plan.items || []).map((i) => planRow(i.label, i.count)).join("");
-  body.innerHTML = `<p class="muted">${plan.analyzed} email(s) will be labelled and archived:</p>` +
-    `<div class="plan-list">${rows}</div>${skipped}`;
-  $("smart-confirm").disabled = false;
+  body.innerHTML = planBlock || `<p class="muted">Nothing to archive.</p>`;
+  confirm.textContent = "Archive";
+  confirm.dataset.mode = "archive";
+  confirm.disabled = !plan.analyzed;
+}
+
+// Analyze the still-unanalyzed selection, then re-plan and show it. Caching is
+// handled server-side by /analyze, so this stays a single seamless step.
+async function analyzeAndContinue() {
+  const ids = unanalyzedSelectedIds();
+  if (!ids.length) return reRunPreview();
+  const confirm = $("smart-confirm");
+  confirm.disabled = true;
+  let done = 0, failed = 0;
+  for (const id of ids) {
+    $("smart-body").innerHTML = `<p class="muted">Analyzing ${done + 1} / ${ids.length}…</p>`;
+    try {
+      const a = await api(`/api/emails/${id}/analyze`, { method: "POST" });
+      const em = lastEmails.find((e) => e.id === id);
+      if (em) em.ai = a;
+      if (selected && selected.id === id) { selected.ai = a; renderAiSection(selected); }
+      done++;
+    } catch (_) {
+      failed++;
+    }
+  }
+  renderList(); // newly analyzed rows light up their category/priority
+  if (failed) toast(`${failed} email(s) could not be analyzed.`, "warn");
+  await reRunPreview(); // re-runs Smart Archive and shows the filing plan
+}
+
+function onSmartConfirm() {
+  if ($("smart-confirm").dataset.mode === "analyze") analyzeAndContinue();
+  else confirmSmartArchive();
 }
 async function confirmSmartArchive() {
   const ids = smartTargetIds;
@@ -1411,7 +1466,7 @@ $("ab-smart").addEventListener("click", () => openSmartArchive(actionIds()));
 $("label-cancel").addEventListener("click", () => $("label-modal").classList.add("hidden"));
 $("label-apply").addEventListener("click", applyLabel);
 $("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
-$("smart-confirm").addEventListener("click", confirmSmartArchive);
+$("smart-confirm").addEventListener("click", onSmartConfirm);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && selectedIds.size && !isModalOpen()) clearSelection();
 });
