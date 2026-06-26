@@ -31,6 +31,7 @@ from app.services.cost_service import CostService
 from app.services.draft_service import DraftService
 from app.services.email_analysis_service import EmailAnalysisService, SQLiteAnalysisCache
 from app.services.email_service import EmailService
+from app.services.filing_engine import EmailRef, FilingResolver, RulesEngine
 from app.services.llm_service import LLMService
 from app.services.mailbox_service import MailboxService
 from app.services.smart_archive_service import SmartArchiveService
@@ -136,7 +137,10 @@ class ServiceContainer:
                 cache=SQLiteAnalysisCache(self.sqlite),
             )
             self.smart_archive_service = SmartArchiveService(
-                analysis_cache=self.analysis_service,
+                resolver=FilingResolver(
+                    rules=RulesEngine(),
+                    analysis_cache=self.analysis_service,
+                ),
                 mailbox=self.mailbox_service,
             )
             # Re-validate using the live settings paths (custom locations).
@@ -227,6 +231,16 @@ class LabelActionRequest(BaseModel):
 
 class CreateLabelRequest(BaseModel):
     name: str
+
+
+class EmailRefIn(BaseModel):
+    id: str
+    sender: str = ""
+
+
+class SmartArchiveRequest(BaseModel):
+    # id + sender per email so the rules engine can decide without a Gmail fetch.
+    emails: list[EmailRefIn] = []
 
 
 class SettingsRequest(BaseModel):
@@ -537,23 +551,27 @@ def mailbox_label(body: LabelActionRequest) -> dict:
     return _run_mailbox_action("label", _apply)
 
 
+def _to_refs(body: SmartArchiveRequest) -> list[EmailRef]:
+    return [EmailRef(id=e.id, sender=e.sender) for e in body.emails]
+
+
 @app.post("/api/smart-archive/preview")
-def smart_archive_preview(body: MailboxActionRequest) -> dict:
-    """Plan where the selected emails would be filed — cache only, no LLM, no Gmail change."""
+def smart_archive_preview(body: SmartArchiveRequest) -> dict:
+    """Plan where the selected emails would be filed — rules + cache only, no LLM, no Gmail change."""
     _require_ready()
     try:
-        return container.smart_archive_service.plan(body.message_ids).as_dict()
+        return container.smart_archive_service.plan(_to_refs(body)).as_dict()
     except Exception as exc:  # noqa: BLE001
         logger.exception("Smart archive preview failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/smart-archive/execute")
-def smart_archive_execute(body: MailboxActionRequest) -> dict:
-    """Create-if-needed + apply label + archive each group (cache only, no LLM)."""
+def smart_archive_execute(body: SmartArchiveRequest) -> dict:
+    """Create-if-needed + apply label + archive each group (rules + cache only, no LLM)."""
     return _run_mailbox_action(
         "smart_archive",
-        lambda: container.smart_archive_service.execute(body.message_ids).as_dict(),
+        lambda: container.smart_archive_service.execute(_to_refs(body)).as_dict(),
     )
 
 

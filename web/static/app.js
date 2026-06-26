@@ -491,8 +491,16 @@ async function analyzeCurrent(force) {
   }
 }
 
-// --- Smart Archive (AI filing; cache only, no new LLM call) -----------------
+// --- Smart Archive (AI filing; rules + cache, no new LLM call) --------------
 let smartTargetIds = [];
+let smartUnanalyzedIds = []; // emails the backend couldn't decide (need analysis)
+// id + sender pairs so the backend rules engine can decide without a Gmail fetch.
+function refsFor(ids) {
+  return ids.map((id) => {
+    const em = lastEmails.find((e) => e.id === id);
+    return { id, sender: em ? em.sender_email || "" : "" };
+  });
+}
 function planRow(label, count) {
   return `<div class="plan-row"><span class="badge cat cat-${categorySlug(label)}">${escapeHtml(label)}</span>` +
     `<span class="plan-fill"></span><b>${count}</b></div>`;
@@ -508,21 +516,11 @@ async function openSmartArchive(ids) {
   await reRunPreview();
 }
 
-// Selected emails that have no cached analysis yet (resolved from the list,
-// whose rows carry the cached analysis). The user never sees "cache" — these
-// are simply the ones "Analyze & Continue" will handle for them.
-function unanalyzedSelectedIds() {
-  return smartTargetIds.filter((id) => {
-    const em = lastEmails.find((e) => e.id === id);
-    return em && !em.ai;
-  });
-}
-
 async function reRunPreview() {
   $("smart-body").innerHTML = `<p class="muted">Planning…</p>`;
   try {
     const plan = await api("/api/smart-archive/preview", {
-      method: "POST", body: JSON.stringify({ message_ids: smartTargetIds }),
+      method: "POST", body: JSON.stringify({ emails: refsFor(smartTargetIds) }),
     });
     renderSmartPlan(plan);
   } catch (e) {
@@ -534,16 +532,18 @@ function renderSmartPlan(plan) {
   const body = $("smart-body");
   const confirm = $("smart-confirm");
   confirm.classList.remove("hidden");
-  const unanalyzed = unanalyzedSelectedIds();
+  // The backend decides what still needs analysis (rules file many emails with
+  // no AI pass at all); trust its list rather than guessing on the client.
+  smartUnanalyzedIds = plan.unanalyzed_ids || [];
   const rows = (plan.items || []).map((i) => planRow(i.label, i.count)).join("");
-  const planBlock = plan.analyzed
-    ? `<p class="muted">${plan.analyzed} email(s) ready to file:</p><div class="plan-list">${rows}</div>`
+  const planBlock = plan.decided
+    ? `<p class="muted">${plan.decided} email(s) ready to file:</p><div class="plan-list">${rows}</div>`
     : "";
 
-  if (unanalyzed.length) {
+  if (smartUnanalyzedIds.length) {
     // Offer to do the analysis inline — one click, no dead-end.
     body.innerHTML = planBlock +
-      `<p class="muted plan-note">${unanalyzed.length} email(s) need a quick AI pass first — ` +
+      `<p class="muted plan-note">${smartUnanalyzedIds.length} email(s) need a quick AI pass first — ` +
       `“Analyze &amp; Continue” will handle it automatically.</p>`;
     confirm.textContent = "Analyze & Continue";
     confirm.dataset.mode = "analyze";
@@ -553,13 +553,13 @@ function renderSmartPlan(plan) {
   body.innerHTML = planBlock || `<p class="muted">Nothing to archive.</p>`;
   confirm.textContent = "Archive";
   confirm.dataset.mode = "archive";
-  confirm.disabled = !plan.analyzed;
+  confirm.disabled = !plan.decided;
 }
 
-// Analyze the still-unanalyzed selection, then re-plan and show it. Caching is
+// Analyze the still-undecided selection, then re-plan and show it. Caching is
 // handled server-side by /analyze, so this stays a single seamless step.
 async function analyzeAndContinue() {
-  const ids = unanalyzedSelectedIds();
+  const ids = smartUnanalyzedIds.slice();
   if (!ids.length) return reRunPreview();
   const confirm = $("smart-confirm");
   confirm.disabled = true;
@@ -592,7 +592,7 @@ async function confirmSmartArchive() {
   $("smart-body").innerHTML = `<p class="muted">Filing & archiving…</p>`;
   try {
     const r = await api("/api/smart-archive/execute", {
-      method: "POST", body: JSON.stringify({ message_ids: ids }),
+      method: "POST", body: JSON.stringify({ emails: refsFor(smartTargetIds) }),
     });
     renderSmartResult(r);
     clearSelection();
@@ -609,8 +609,8 @@ function renderSmartResult(r) {
   const byLabel = Object.entries(r.by_label || {}).map(([l, n]) => planRow(l, n)).join("");
   const created = (r.labels_created || []).length
     ? `<p class="muted plan-note">Labels created: ${r.labels_created.map(escapeHtml).join(", ")}</p>` : "";
-  const skipped = r.skipped_unanalyzed
-    ? `<p class="muted plan-note">${r.skipped_unanalyzed} skipped (not analyzed).</p>` : "";
+  const skipped = r.needs_analysis
+    ? `<p class="muted plan-note">${r.needs_analysis} still need analysis.</p>` : "";
   const failed = r.failed
     ? `<p class="warn-box">${r.failed} label group(s) failed and were left untouched.</p>` : "";
   $("smart-body").innerHTML = `<p><b>${r.archived}</b> email(s) archived.</p>` +

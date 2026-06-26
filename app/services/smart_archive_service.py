@@ -1,48 +1,36 @@
-"""Smart Archive — the AI Filing engine.
+"""Smart Archive — the AI Filing engine (V2).
 
-Files selected emails into a Gmail label derived from their (already cached)
-AI analysis, then archives them. It reads ONLY the Phase 4 analysis cache and
-NEVER issues an LLM call — structurally, it has no LLM dependency, only a cache
-reader and the MailboxService.
-
-The label is chosen by a pluggable ``label_resolver`` (analysis -> label name).
-The default maps category -> label, but the seam is deliberately open so future
-rules can return nested labels (e.g. "Finance/Taxes") for Auto Filing / AI Rules
-/ Inbox Cleanup without changing this service.
+Files selected emails into a Gmail label, then archives them. The label for each
+email is chosen by the :class:`FilingResolver`, cheapest source first:
+rules (no LLM) → cached AI analysis → undecided (offer "Analyze & Continue").
+This service itself NEVER calls the LLM — it only reads decisions and drives the
+MailboxService.
 
 Atomicity: each label group is filed with a single ``apply_label(archive=True)``
-call, which adds the label and removes INBOX in one Gmail batchModify. That is
-atomic per group, so an email is never left labelled-but-not-archived (or vice
-versa) — a failed group simply stays untouched and is reported.
+call (add label + remove INBOX in one Gmail batchModify), so an email is never
+left labelled-but-not-archived — a failed group stays untouched and is reported.
+
+The engine is reusable as-is for Auto Filing / Inbox Cleanup / Scheduled Cleanup
+(pass the same EmailRefs); future hierarchical/multi-labels extend FilingDecision
+without changing this service.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
 
-from app.llm.email_analysis import EmailAnalysis
+from app.services.filing_engine import EmailRef, FilingResolver
 from app.services.mailbox_service import MailboxService
 
 logger = logging.getLogger(__name__)
-
-
-class CacheReader(Protocol):
-    """Just the read side of the analysis cache (no LLM, no analyze)."""
-
-    def get_cached_many(self, message_ids: list[str]) -> dict[str, EmailAnalysis]: ...
-
-
-def default_label_resolver(analysis: EmailAnalysis) -> str:
-    """Map an analysis to a Gmail label name. Default: the category itself."""
-    return analysis.category or "Other"
 
 
 @dataclass(slots=True)
 class ArchivePlanItem:
     label: str
     message_ids: list[str]
+    source: str = "rule"  # dominant source for this group ("rule" | "ai")
 
     @property
     def count(self) -> int:
@@ -53,14 +41,16 @@ class ArchivePlanItem:
 class ArchivePlan:
     items: list[ArchivePlanItem]
     total_selected: int
-    skipped_unanalyzed: list[str] = field(default_factory=list)
+    undecided_ids: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
-            "items": [{"label": i.label, "count": i.count} for i in self.items],
+            "items": [{"label": i.label, "count": i.count, "source": i.source} for i in self.items],
             "total_selected": self.total_selected,
-            "analyzed": sum(i.count for i in self.items),
-            "skipped_unanalyzed": len(self.skipped_unanalyzed),
+            "decided": sum(i.count for i in self.items),
+            "needs_analysis": len(self.undecided_ids),
+            # Exact ids the UI should analyze for a one-click "Analyze & Continue".
+            "unanalyzed_ids": list(self.undecided_ids),
         }
 
 
@@ -69,7 +59,7 @@ class ArchiveResult:
     archived: int
     labels_created: list[str]
     by_label: dict[str, int]
-    skipped_unanalyzed: int
+    needs_analysis: int
     failures: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
@@ -77,55 +67,53 @@ class ArchiveResult:
             "archived": self.archived,
             "labels_created": self.labels_created,
             "by_label": self.by_label,
-            "skipped_unanalyzed": self.skipped_unanalyzed,
+            "needs_analysis": self.needs_analysis,
             "failed": len(self.failures),
             "failures": self.failures,
         }
 
 
 class SmartArchiveService:
-    def __init__(
-        self,
-        *,
-        analysis_cache: CacheReader,
-        mailbox: MailboxService,
-        label_resolver: Callable[[EmailAnalysis], str] = default_label_resolver,
-    ) -> None:
-        self._cache = analysis_cache
+    def __init__(self, *, resolver: FilingResolver, mailbox: MailboxService) -> None:
+        self._resolver = resolver
         self._mailbox = mailbox
-        self._resolver = label_resolver
 
-    def plan(self, message_ids: list[str]) -> ArchivePlan:
-        """Group selected emails by target label using cached analysis only.
-
-        Emails without a cached analysis are skipped (never analyzed here).
-        """
-        ids = [m for m in dict.fromkeys(message_ids) if m]
-        analyses = self._cache.get_cached_many(ids)
+    def plan(self, refs: list[EmailRef]) -> ArchivePlan:
+        """Group emails by their decided label (rules + cache only — no LLM)."""
+        refs = _dedupe(refs)
+        decisions, undecided = self._resolver.decide_many(refs)
         groups: dict[str, list[str]] = {}
-        skipped: list[str] = []
-        for mid in ids:
-            analysis = analyses.get(mid)
-            if analysis is None:
-                skipped.append(mid)
+        sources: dict[str, set[str]] = {}
+        for ref in refs:
+            decision = decisions.get(ref.id)
+            if decision is None:
                 continue
-            label = (self._resolver(analysis) or "Other").strip() or "Other"
-            groups.setdefault(label, []).append(mid)
-        items = [ArchivePlanItem(label=label, message_ids=mids) for label, mids in groups.items()]
+            label = (decision.label or "Other").strip() or "Other"
+            groups.setdefault(label, []).append(ref.id)
+            sources.setdefault(label, set()).add(decision.source)
+        items = [
+            ArchivePlanItem(
+                label=label,
+                message_ids=mids,
+                source="rule" if sources.get(label) == {"rule"} else
+                ("ai" if sources.get(label) == {"ai"} else "mixed"),
+            )
+            for label, mids in groups.items()
+        ]
         items.sort(key=lambda i: (-i.count, i.label.lower()))
-        return ArchivePlan(items=items, total_selected=len(ids), skipped_unanalyzed=skipped)
+        return ArchivePlan(items=items, total_selected=len(refs), undecided_ids=undecided)
 
-    def execute(self, message_ids: list[str]) -> ArchiveResult:
-        """File-and-archive each label group. Reuses labels; creates missing ones once."""
-        plan = self.plan(message_ids)
+    def execute(self, refs: list[EmailRef]) -> ArchiveResult:
+        """Create-if-needed + apply label + archive each group."""
+        plan = self.plan(refs)
         if not plan.items:
             return ArchiveResult(
                 archived=0, labels_created=[], by_label={},
-                skipped_unanalyzed=len(plan.skipped_unanalyzed),
+                needs_analysis=len(plan.undecided_ids),
             )
 
-        # One labels listing; reuse existing labels, create only what's missing.
-        # (A missing-scope error surfaces here, before any change is made.)
+        # One labels listing; reuse existing (case-insensitive), create missing once.
+        # A missing-scope error surfaces here, before any change is made.
         existing = {l["name"].lower(): l["id"] for l in self._mailbox.list_labels()}
         created: list[str] = []
         by_label: dict[str, int] = {}
@@ -158,13 +146,23 @@ class SmartArchiveService:
                 )
 
         logger.info(
-            "Smart archive: %d archived across %d label(s), %d created, %d skipped, %d failed",
-            archived, len(by_label), len(created), len(plan.skipped_unanalyzed), len(failures),
+            "Smart archive: %d archived across %d label(s), %d created, %d need analysis, %d failed",
+            archived, len(by_label), len(created), len(plan.undecided_ids), len(failures),
         )
         return ArchiveResult(
             archived=archived,
             labels_created=created,
             by_label=by_label,
-            skipped_unanalyzed=len(plan.skipped_unanalyzed),
+            needs_analysis=len(plan.undecided_ids),
             failures=failures,
         )
+
+
+def _dedupe(refs: list[EmailRef]) -> list[EmailRef]:
+    seen: set[str] = set()
+    out: list[EmailRef] = []
+    for ref in refs:
+        if ref.id and ref.id not in seen:
+            seen.add(ref.id)
+            out.append(ref)
+    return out
