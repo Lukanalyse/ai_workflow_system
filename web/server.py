@@ -33,6 +33,7 @@ from app.services.email_analysis_service import EmailAnalysisService, SQLiteAnal
 from app.services.email_service import EmailService
 from app.services.llm_service import LLMService
 from app.services.mailbox_service import MailboxService
+from app.services.smart_archive_service import SmartArchiveService
 
 # Per-email fallback token averages used for cost estimates before any history
 # exists (one summarize + one draft call). Refined automatically from real
@@ -73,6 +74,7 @@ class ServiceContainer:
         self.bulk_service: BulkService | None = None
         self.mailbox_service: MailboxService | None = None
         self.analysis_service: EmailAnalysisService | None = None
+        self.smart_archive_service: SmartArchiveService | None = None
         self.reload()
 
     def _teardown(self) -> None:
@@ -80,6 +82,7 @@ class ServiceContainer:
             "settings", "sqlite", "provider", "cost_service", "user_config_store",
             "user_config", "scorer", "llm_service", "email_service",
             "draft_service", "bulk_service", "mailbox_service", "analysis_service",
+            "smart_archive_service",
         ):
             setattr(self, attr, None)
 
@@ -131,6 +134,10 @@ class ServiceContainer:
             self.analysis_service = EmailAnalysisService(
                 llm_service=self.llm_service,
                 cache=SQLiteAnalysisCache(self.sqlite),
+            )
+            self.smart_archive_service = SmartArchiveService(
+                analysis_cache=self.analysis_service,
+                mailbox=self.mailbox_service,
             )
             # Re-validate using the live settings paths (custom locations).
             self.fs_issues = check_critical_paths(settings)
@@ -528,6 +535,26 @@ def mailbox_label(body: LabelActionRequest) -> dict:
         return result
 
     return _run_mailbox_action("label", _apply)
+
+
+@app.post("/api/smart-archive/preview")
+def smart_archive_preview(body: MailboxActionRequest) -> dict:
+    """Plan where the selected emails would be filed — cache only, no LLM, no Gmail change."""
+    _require_ready()
+    try:
+        return container.smart_archive_service.plan(body.message_ids).as_dict()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Smart archive preview failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/smart-archive/execute")
+def smart_archive_execute(body: MailboxActionRequest) -> dict:
+    """Create-if-needed + apply label + archive each group (cache only, no LLM)."""
+    return _run_mailbox_action(
+        "smart_archive",
+        lambda: container.smart_archive_service.execute(body.message_ids).as_dict(),
+    )
 
 
 @app.get("/api/labels")

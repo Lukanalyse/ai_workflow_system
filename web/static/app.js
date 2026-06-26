@@ -491,6 +491,79 @@ async function analyzeCurrent(force) {
   }
 }
 
+// --- Smart Archive (AI filing; cache only, no new LLM call) -----------------
+let smartTargetIds = [];
+function planRow(label, count) {
+  return `<div class="plan-row"><span class="badge cat cat-${categorySlug(label)}">${escapeHtml(label)}</span>` +
+    `<span class="plan-fill"></span><b>${count}</b></div>`;
+}
+async function openSmartArchive(ids) {
+  if (!ids.length) return;
+  smartTargetIds = ids;
+  $("smart-title").textContent = "✨ Smart Archive";
+  $("smart-cancel").textContent = "Cancel";
+  $("smart-confirm").classList.remove("hidden");
+  $("smart-confirm").disabled = true;
+  $("smart-body").innerHTML = `<p class="muted">Planning…</p>`;
+  $("smart-modal").classList.remove("hidden");
+  try {
+    const plan = await api("/api/smart-archive/preview", {
+      method: "POST", body: JSON.stringify({ message_ids: ids }),
+    });
+    renderSmartPlan(plan);
+  } catch (e) {
+    $("smart-body").innerHTML = `<p class="warn-box">${escapeHtml(e.message)}</p>`;
+  }
+}
+function renderSmartPlan(plan) {
+  const body = $("smart-body");
+  const skipped = plan.skipped_unanalyzed
+    ? `<p class="muted plan-note">${plan.skipped_unanalyzed} not analyzed — skipped. Analyze them first to file them.</p>`
+    : "";
+  if (!plan.analyzed) {
+    body.innerHTML = `<p>None of the selected emails are analyzed yet.</p>${skipped}`;
+    $("smart-confirm").classList.add("hidden");
+    return;
+  }
+  const rows = (plan.items || []).map((i) => planRow(i.label, i.count)).join("");
+  body.innerHTML = `<p class="muted">${plan.analyzed} email(s) will be labelled and archived:</p>` +
+    `<div class="plan-list">${rows}</div>${skipped}`;
+  $("smart-confirm").disabled = false;
+}
+async function confirmSmartArchive() {
+  const ids = smartTargetIds;
+  if (!ids.length) return;
+  $("smart-confirm").disabled = true;
+  $("smart-body").innerHTML = `<p class="muted">Filing & archiving…</p>`;
+  try {
+    const r = await api("/api/smart-archive/execute", {
+      method: "POST", body: JSON.stringify({ message_ids: ids }),
+    });
+    renderSmartResult(r);
+    clearSelection();
+    loadEmails(); // archived emails drop out of the inbox view
+    toast(`Smart Archive: ${r.archived} email(s) filed.`, r.failed ? "warn" : "ok");
+  } catch (e) {
+    $("smart-body").innerHTML = `<p class="warn-box">${escapeHtml(e.message)}</p>`;
+    $("smart-confirm").classList.remove("hidden");
+    $("smart-confirm").disabled = false;
+  }
+}
+function renderSmartResult(r) {
+  $("smart-title").textContent = "✓ Smart Archive complete";
+  const byLabel = Object.entries(r.by_label || {}).map(([l, n]) => planRow(l, n)).join("");
+  const created = (r.labels_created || []).length
+    ? `<p class="muted plan-note">Labels created: ${r.labels_created.map(escapeHtml).join(", ")}</p>` : "";
+  const skipped = r.skipped_unanalyzed
+    ? `<p class="muted plan-note">${r.skipped_unanalyzed} skipped (not analyzed).</p>` : "";
+  const failed = r.failed
+    ? `<p class="warn-box">${r.failed} label group(s) failed and were left untouched.</p>` : "";
+  $("smart-body").innerHTML = `<p><b>${r.archived}</b> email(s) archived.</p>` +
+    `<div class="plan-list">${byLabel}</div>${created}${skipped}${failed}`;
+  $("smart-confirm").classList.add("hidden");
+  $("smart-cancel").textContent = "Done";
+}
+
 // Quick actions for the currently-open email (operate on a single id).
 function renderDetailActions(em) {
   const el = $("d-actions");
@@ -1334,8 +1407,11 @@ $("ab-archive").addEventListener("click", () => doArchive(actionIds()));
 $("ab-read").addEventListener("click", () => doMarkRead(actionIds()));
 $("ab-unread").addEventListener("click", () => doMarkUnread(actionIds()));
 $("ab-label").addEventListener("click", () => openLabelModal(actionIds()));
+$("ab-smart").addEventListener("click", () => openSmartArchive(actionIds()));
 $("label-cancel").addEventListener("click", () => $("label-modal").classList.add("hidden"));
 $("label-apply").addEventListener("click", applyLabel);
+$("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
+$("smart-confirm").addEventListener("click", confirmSmartArchive);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && selectedIds.size && !isModalOpen()) clearSelection();
 });
