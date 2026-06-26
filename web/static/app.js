@@ -491,9 +491,16 @@ async function analyzeCurrent(force) {
   }
 }
 
-// --- Smart Archive (AI filing; rules + cache, no new LLM call) --------------
+// --- Smart Archive (AI filing; rules + learning + cache, no new LLM call) ----
 let smartTargetIds = [];
 let smartUnanalyzedIds = []; // emails the backend couldn't decide (need analysis)
+let smartPlanItems = [];     // last preview items (label, count, confidence, message_ids)
+let smartOverrides = {};     // originalLabel -> user-chosen label
+// Label choices offered when the user edits a suggestion.
+const CATEGORY_OPTIONS = [
+  "Finance", "Administration", "Work", "Research", "Shopping", "Gaming",
+  "Travel", "Personal", "Newsletter", "Spam", "Utilities", "Development", "Other",
+];
 // id + sender pairs so the backend rules engine can decide without a Gmail fetch.
 function refsFor(ids) {
   return ids.map((id) => {
@@ -501,9 +508,27 @@ function refsFor(ids) {
     return { id, sender: em ? em.sender_email || "" : "" };
   });
 }
+function confClass(conf) {
+  const pct = Math.round((Number(conf) || 0) * 100);
+  return pct >= 85 ? "conf-high" : pct >= 60 ? "conf-med" : "conf-low";
+}
+// Read-only label/count row (used in the result summary).
 function planRow(label, count) {
   return `<div class="plan-row"><span class="badge cat cat-${categorySlug(label)}">${escapeHtml(label)}</span>` +
     `<span class="plan-fill"></span><b>${count}</b></div>`;
+}
+// Editable suggestion row: confidence + an editable label + count.
+function smartItemRow(item) {
+  const pct = Math.round((Number(item.confidence) || 0) * 100);
+  const current = smartOverrides[item.label] || item.label;
+  const opts = [...new Set([current, item.label, ...CATEGORY_OPTIONS])]
+    .map((o) => `<option value="${escapeHtml(o)}"${o === current ? " selected" : ""}>${escapeHtml(o)}</option>`)
+    .join("");
+  return `<div class="plan-row">
+      <select class="plan-label-sel" data-orig="${escapeHtml(item.label)}">${opts}</select>
+      <span class="conf ${confClass(item.confidence)}" title="AI confidence">${pct}%</span>
+      <span class="plan-fill"></span><b>${item.count}</b>
+    </div>`;
 }
 async function openSmartArchive(ids) {
   if (!ids.length) return;
@@ -532,12 +557,15 @@ function renderSmartPlan(plan) {
   const body = $("smart-body");
   const confirm = $("smart-confirm");
   confirm.classList.remove("hidden");
-  // The backend decides what still needs analysis (rules file many emails with
-  // no AI pass at all); trust its list rather than guessing on the client.
+  // The backend decides what still needs analysis (rules/learning file many
+  // emails with no AI pass at all); trust its list rather than guessing.
   smartUnanalyzedIds = plan.unanalyzed_ids || [];
-  const rows = (plan.items || []).map((i) => planRow(i.label, i.count)).join("");
+  smartPlanItems = plan.items || [];
+  smartOverrides = {};
+  const rows = smartPlanItems.map((i) => smartItemRow(i)).join("");
   const planBlock = plan.decided
-    ? `<p class="muted">${plan.decided} email(s) ready to file:</p><div class="plan-list">${rows}</div>`
+    ? `<p class="muted">${plan.decided} email(s) suggested — edit any label if needed:</p>` +
+      `<div class="plan-list">${rows}</div>`
     : "";
 
   if (smartUnanalyzedIds.length) {
@@ -548,12 +576,15 @@ function renderSmartPlan(plan) {
     confirm.textContent = "Analyze & Continue";
     confirm.dataset.mode = "analyze";
     confirm.disabled = false;
-    return;
+  } else {
+    body.innerHTML = planBlock || `<p class="muted">Nothing to archive.</p>`;
+    confirm.textContent = "Archive";
+    confirm.dataset.mode = "archive";
+    confirm.disabled = !plan.decided;
   }
-  body.innerHTML = planBlock || `<p class="muted">Nothing to archive.</p>`;
-  confirm.textContent = "Archive";
-  confirm.dataset.mode = "archive";
-  confirm.disabled = !plan.decided;
+  // Track per-group label overrides (memorized server-side on Archive).
+  body.querySelectorAll(".plan-label-sel").forEach((sel) =>
+    sel.addEventListener("change", (e) => { smartOverrides[e.target.dataset.orig] = e.target.value; }));
 }
 
 // Analyze the still-undecided selection, then re-plan and show it. Caching is
@@ -591,8 +622,20 @@ async function confirmSmartArchive() {
   $("smart-confirm").disabled = true;
   $("smart-body").innerHTML = `<p class="muted">Filing & archiving…</p>`;
   try {
+    // Build refs from the (possibly edited) plan; only edited groups carry an
+    // override, so unedited ones keep their rule/learned/ai source in history.
+    const refs = [];
+    for (const item of smartPlanItems) {
+      const chosen = smartOverrides[item.label] || item.label;
+      const overridden = chosen !== item.label;
+      for (const mid of item.message_ids || []) {
+        const em = lastEmails.find((e) => e.id === mid);
+        const sender = em ? em.sender_email || "" : "";
+        refs.push(overridden ? { id: mid, sender, override: chosen } : { id: mid, sender });
+      }
+    }
     const r = await api("/api/smart-archive/execute", {
-      method: "POST", body: JSON.stringify({ emails: refsFor(smartTargetIds) }),
+      method: "POST", body: JSON.stringify({ emails: refs }),
     });
     renderSmartResult(r);
     clearSelection();

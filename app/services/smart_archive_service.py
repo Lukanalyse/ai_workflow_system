@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 class ArchivePlanItem:
     label: str
     message_ids: list[str]
-    source: str = "rule"  # dominant source for this group ("rule" | "ai")
+    source: str = "rule"  # "rule" | "learned" | "ai" | "manual" | "mixed"
+    confidence: float = 1.0  # aggregate (average) confidence for the group
 
     @property
     def count(self) -> int:
@@ -45,7 +46,17 @@ class ArchivePlan:
 
     def as_dict(self) -> dict:
         return {
-            "items": [{"label": i.label, "count": i.count, "source": i.source} for i in self.items],
+            "items": [
+                {
+                    "label": i.label,
+                    "count": i.count,
+                    "source": i.source,
+                    "confidence": round(i.confidence, 2),
+                    # ids let the UI apply per-group label overrides on Archive.
+                    "message_ids": list(i.message_ids),
+                }
+                for i in self.items
+            ],
             "total_selected": self.total_selected,
             "decided": sum(i.count for i in self.items),
             "needs_analysis": len(self.undecided_ids),
@@ -96,9 +107,10 @@ class SmartArchiveService:
                 continue
             label = (decision.label or "Other").strip() or "Other"
             decision.label = label
-            group = groups.setdefault(label, {"ids": [], "sources": set()})
+            group = groups.setdefault(label, {"ids": [], "sources": set(), "confs": []})
             group["ids"].append(ref.id)
             group["sources"].add(decision.source)
+            group["confs"].append(float(decision.confidence))
         return refs, decisions, undecided, groups
 
     def plan(self, refs: list[EmailRef]) -> ArchivePlan:
@@ -109,6 +121,7 @@ class SmartArchiveService:
                 label=label,
                 message_ids=g["ids"],
                 source=next(iter(g["sources"])) if len(g["sources"]) == 1 else "mixed",
+                confidence=sum(g["confs"]) / len(g["confs"]) if g["confs"] else 1.0,
             )
             for label, g in groups.items()
         ]

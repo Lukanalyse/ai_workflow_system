@@ -154,6 +154,23 @@ def test_no_items_when_nothing_decided():
     assert res.archived == 0 and res.needs_analysis == 2 and mb.list_calls == 0
 
 
+def test_override_beats_rule_and_is_source_manual():
+    mb = FakeMailbox(existing=[])
+    rules = [FilingRule("*@amazon.*", "Shopping")]
+    # User corrects the suggestion to "Gifts" via an override on the ref.
+    res = _svc({}, mb, rules=rules).plan([EmailRef("m1", "deals@amazon.fr", "Gifts")])
+    assert res.items[0].label == "Gifts" and res.items[0].source == "manual"
+
+
+def test_plan_exposes_confidence_and_ids():
+    mb = FakeMailbox(existing=[])
+    d = _svc({"a": _a("Finance")}, mb).plan(_refs("a")).as_dict()
+    item = d["items"][0]
+    assert item["label"] == "Finance" and item["count"] == 1
+    assert 0.0 <= item["confidence"] <= 1.0
+    assert item["message_ids"] == ["a"] and "source" in item
+
+
 def test_missing_scope_propagates_permission_error():
     class _Denied(FakeMailbox):
         def list_labels(self):

@@ -129,6 +129,28 @@ def test_execute_records_history_then_next_time_learned(db):
     assert plan.items[0].label == "Finance" and plan.items[0].source == "learned"
 
 
+def test_user_override_is_memorized_and_learned(db):
+    # User corrects a suggestion -> "manual" is recorded -> next time it's learned.
+    ls = LearningStore(db)
+
+    class _Cache:
+        def get_cached_many(self, ids):
+            return {"m1": EmailAnalysis("s", "Other", "Low", False, "Archive", 0.5)}
+
+    resolver = FilingResolver(rules=RulesEngine([]), analysis_cache=_Cache(), learning=ls)
+    svc = SmartArchiveService(resolver=resolver, mailbox=_FakeMailbox(), learning=ls)
+
+    # AI said "Other" but the user files it as "Banking" (override).
+    res = svc.execute([EmailRef("m1", "advisor@bank.com", "Banking")])
+    assert res.by_label == {"Banking": 1}
+    row = db.recent_filing_history()[0]
+    assert row["label"] == "Banking" and row["source"] == "manual"
+
+    # Next email from the same sender is now learned as "Banking".
+    plan = svc.plan([EmailRef("m2", "advisor@bank.com")])
+    assert plan.items[0].label == "Banking" and plan.items[0].source == "learned"
+
+
 def test_no_learning_store_means_no_recording(db):
     # SmartArchive without a learning store must still work (records nothing).
     class _Cache:

@@ -51,10 +51,12 @@ DEFAULT_RULES: list[FilingRule] = [
 
 @dataclass(slots=True)
 class EmailRef:
-    """Minimal reference the engine needs: id (for cache + Gmail ops) + sender."""
+    """Reference the engine needs: id (cache + Gmail ops), sender (rules), and
+    an optional user ``override`` label (an explicit suggestion correction)."""
 
     id: str
     sender: str = ""
+    override: str = ""
 
 
 @dataclass(slots=True)
@@ -105,6 +107,13 @@ class FilingResolver:
         # Look up cached analyses once for the ids not settled by a rule/learning.
         ai = self._cache.get_cached_many([r.id for r in refs])
         for ref in refs:
+            # User correction wins over everything and is recorded so the
+            # Learning Engine memorizes it (6B).
+            if (ref.override or "").strip():
+                decisions[ref.id] = FilingDecision(
+                    label=ref.override.strip(), confidence=1.0, source="manual"
+                )
+                continue
             rule = self._rules.match(ref.sender)
             if rule is not None:
                 decisions[ref.id] = FilingDecision(label=rule.label, confidence=1.0, source="rule")

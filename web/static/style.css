@@ -236,6 +236,16 @@ body {
 .plan-row b { font-variant-numeric: tabular-nums; }
 .plan-fill { flex: 1; border-bottom: 1px dotted var(--border-strong); height: 1px; }
 .plan-note { margin: 6px 0 0; }
+.plan-label-sel {
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px;
+  font-size: 13px; background: var(--panel); color: var(--text); max-width: 160px;
+}
+.plan-label-sel:hover { border-color: var(--border-strong); }
+/* AI confidence pill (colour-coded). */
+.conf { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+.conf-high { background: #ecfdf3; color: #047857; }
+.conf-med { background: #fffbeb; color: var(--warn); }
+.conf-low { background: #fef2f2; color: var(--err); }
 
 /* Row checkbox + selected-card state. */
 .row-check { display: flex; align-items: center; padding-top: 2px; cursor: pointer; }
