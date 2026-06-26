@@ -84,3 +84,29 @@ class EmailProvider(ABC):
     @abstractmethod
     def health(self) -> tuple[str, str]:
         """Return (status, detail) for the health endpoint."""
+
+    # --- Mailbox mutations (Phase 3) ----------------------------------------
+    # Non-abstract on purpose: providers that do not yet implement mailbox
+    # actions (e.g. the Outlook scaffold) stay importable and instantiable.
+    # GmailProvider overrides all of these.
+    def has_modify_scope(self) -> bool:
+        """Whether the active credentials may modify the mailbox."""
+        return False
+
+    def modify_labels(
+        self,
+        message_ids: list[str],
+        *,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> int:
+        """Add/remove labels on one or many messages; return the count modified."""
+        raise NotImplementedError("This provider does not support label modification.")
+
+    def list_labels(self) -> list:
+        """Return the mailbox's user labels."""
+        raise NotImplementedError("This provider does not support listing labels.")
+
+    def create_label(self, name: str):
+        """Create a label and return it."""
+        raise NotImplementedError("This provider does not support creating labels.")

@@ -129,6 +129,45 @@ def test_settings_response_masks_keys(client, restore_container):
     assert body["openai_api_key"].startswith("…") or body["openai_api_key"] == "set"
 
 
+# --- Mailbox action endpoints (Phase 3) --------------------------------------
+def test_mailbox_endpoint_fails_closed_when_degraded(client, restore_container):
+    _make_degraded(restore_container)
+    r = client.post("/api/mailbox/mark-read", json={"message_ids": ["m1"]})
+    assert r.status_code == 503
+
+
+def test_mailbox_mark_read_ok(client, restore_container):
+    from app.services.mailbox_service import ActionResult
+
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def mark_read(self, ids):
+            return ActionResult(action="mark_read", requested=len(ids), modified=len(ids))
+
+    c.mailbox_service = _Svc()
+    r = client.post("/api/mailbox/mark-read", json={"message_ids": ["m1", "m2"]})
+    assert r.status_code == 200
+    assert r.json() == {"action": "mark_read", "requested": 2, "modified": 2, "failed": 0, "failures": []}
+
+
+def test_mailbox_missing_scope_returns_403(client, restore_container):
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def archive(self, ids):
+            raise PermissionError("reconnect Gmail to enable archive")
+
+    c.mailbox_service = _Svc()
+    r = client.post("/api/mailbox/archive", json={"message_ids": ["m1"]})
+    assert r.status_code == 403
+    assert "reconnect" in r.json()["detail"].lower()
+
+
 def test_setup_status_carries_no_secret(client, restore_container):
     c = restore_container
     c.degraded = False

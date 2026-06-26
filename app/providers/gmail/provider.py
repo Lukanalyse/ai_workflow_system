@@ -5,7 +5,8 @@ import logging
 from app.auth.gmail_auth import GmailAuthManager, build_auth_manager
 from app.auth.oauth_flow import GmailOAuthFlow
 from app.auth.token_store import TokenStore
-from app.config.settings import AppSettings
+from app.config.settings import GMAIL_MODIFY_SCOPE, AppSettings
+from app.email.gmail_actions import GmailActions
 from app.email.gmail_draft_creator import GmailDraftCreator
 from app.email.gmail_reader import GmailMessage, GmailReadConfig, GmailReader
 from app.email.gmail_sender import GmailSender
@@ -52,11 +53,14 @@ class GmailProvider(EmailProvider):
         self._reader: GmailReader | None = None
         self._draft_creator: GmailDraftCreator | None = None
         self._sender: GmailSender | None = None
+        self._actions: GmailActions | None = None
         gmail = settings.gmail
         self._token_store = TokenStore(gmail.tokens_dir, legacy_token_path=gmail.token_path)
         self.oauth = GmailOAuthFlow(
             credentials_path=gmail.credentials_path,
-            scopes=gmail.scopes,
+            # Request gmail.modify at consent so a (re)connect enables mailbox
+            # actions; the validity gate still uses the narrower gmail.scopes.
+            scopes=gmail.oauth_scopes,
             redirect_uri=settings.oauth_redirect_uri,
             # Persist the pending PKCE verifier under storage/ (a Docker volume)
             # so the callback survives a worker change or a container restart
@@ -99,6 +103,7 @@ class GmailProvider(EmailProvider):
         self._reader = GmailReader(service, user_id=gmail.user_id)
         self._draft_creator = GmailDraftCreator(service, user_id=gmail.user_id)
         self._sender = GmailSender(service, user_id=gmail.user_id)
+        self._actions = GmailActions(service, user_id=gmail.user_id)
 
     def _maybe_migrate_legacy(self, service) -> None:
         if self._token_store.active_token_path() is not None:
@@ -155,6 +160,52 @@ class GmailProvider(EmailProvider):
         assert self._reader is not None
         return self._reader.evaluate_replyability(message, exclude_noreply=True)
 
+    # --- Mailbox mutations (require gmail.modify) ----------------------------
+    def has_modify_scope(self) -> bool:
+        """True when the active credentials were granted gmail.modify."""
+        gmail = self._settings.gmail
+        account = self._token_store.active_account(gmail.scopes)
+        if account is not None:
+            return GMAIL_MODIFY_SCOPE in account.scopes
+        if gmail.token_path.exists():
+            try:
+                creds = self._auth_manager().load_credentials()
+                return creds is not None and GMAIL_MODIFY_SCOPE in (creds.scopes or [])
+            except Exception:  # noqa: BLE001
+                return False
+        return False
+
+    def _require_modify_scope(self) -> None:
+        if not self.has_modify_scope():
+            raise PermissionError(
+                "Gmail mailbox actions need an extra permission. Open Settings → "
+                "Gmail and reconnect Gmail to enable archive, labels and read-state changes."
+            )
+
+    def modify_labels(
+        self,
+        message_ids: list[str],
+        *,
+        add: list[str] | None = None,
+        remove: list[str] | None = None,
+    ) -> int:
+        self._require_modify_scope()
+        self._ensure_service()
+        assert self._actions is not None
+        return self._actions.batch_modify(message_ids, add_label_ids=add, remove_label_ids=remove)
+
+    def list_labels(self) -> list:
+        self._require_modify_scope()
+        self._ensure_service()
+        assert self._actions is not None
+        return self._actions.list_labels()
+
+    def create_label(self, name: str):
+        self._require_modify_scope()
+        self._ensure_service()
+        assert self._actions is not None
+        return self._actions.create_label(name)
+
     def health(self) -> tuple[str, str]:
         gmail = self._settings.gmail
         if not gmail.credentials_path.exists():
@@ -175,6 +226,7 @@ class GmailProvider(EmailProvider):
         self._reader = None
         self._draft_creator = None
         self._sender = None
+        self._actions = None
 
     def connection_status(self) -> dict:
         """Non-sensitive connection status for the Settings → Gmail page.
@@ -204,6 +256,7 @@ class GmailProvider(EmailProvider):
                     "credentials_available": creds_available,
                     "accounts": self._token_store.list_emails(),
                     "send_scope": "https://www.googleapis.com/auth/gmail.send" in (creds.scopes or []),
+                    "modify_scope": GMAIL_MODIFY_SCOPE in (creds.scopes or []),
                 }
 
         if account is None:
@@ -217,6 +270,7 @@ class GmailProvider(EmailProvider):
                 "credentials_available": creds_available,
                 "accounts": self._token_store.list_emails(),
                 "send_scope": False,
+                "modify_scope": False,
             }
         return {
             "connected": account.valid or (account.expired and account.has_refresh_token),
@@ -228,6 +282,7 @@ class GmailProvider(EmailProvider):
             "credentials_available": creds_available,
             "accounts": self._token_store.list_emails(),
             "send_scope": "https://www.googleapis.com/auth/gmail.send" in account.scopes,
+            "modify_scope": GMAIL_MODIFY_SCOPE in account.scopes,
         }
 
     def account_email(self) -> str | None:

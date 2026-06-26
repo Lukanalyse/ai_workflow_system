@@ -15,6 +15,12 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-4.1-mini"
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 
+# Gmail scope that authorizes label/archive/read-state changes (everything
+# except permanent deletion). Requested at consent so a reconnect grants it,
+# but intentionally NOT part of the has_scopes gate (see GmailSettings) so
+# existing read/draft tokens keep working — only modify *actions* need it.
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+
 
 class EmailFilterSettings(BaseModel):
     only_unread: bool = True
@@ -57,6 +63,21 @@ class GmailSettings(BaseModel):
             "https://www.googleapis.com/auth/gmail.compose",
         ]
     )
+
+    @property
+    def oauth_scopes(self) -> list[str]:
+        """Scopes requested on the consent screen.
+
+        This is ``scopes`` plus ``gmail.modify`` so a (re)connect grants the
+        archive/label/mark-read capabilities. The narrower ``scopes`` list still
+        drives the credential validity gate (``has_scopes``), so a token granted
+        only read+compose stays usable for reading and drafting — only the new
+        mailbox *actions* require the modify grant, surfaced to the UI as
+        ``modify_scope`` so it can offer a reconnect.
+        """
+        if GMAIL_MODIFY_SCOPE in self.scopes:
+            return list(self.scopes)
+        return [*self.scopes, GMAIL_MODIFY_SCOPE]
 
 
 class AppSettings(BaseSettings):

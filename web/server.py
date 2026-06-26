@@ -31,6 +31,7 @@ from app.services.cost_service import CostService
 from app.services.draft_service import DraftService
 from app.services.email_service import EmailService
 from app.services.llm_service import LLMService
+from app.services.mailbox_service import MailboxService
 
 # Per-email fallback token averages used for cost estimates before any history
 # exists (one summarize + one draft call). Refined automatically from real
@@ -69,13 +70,14 @@ class ServiceContainer:
         self.email_service: EmailService | None = None
         self.draft_service: DraftService | None = None
         self.bulk_service: BulkService | None = None
+        self.mailbox_service: MailboxService | None = None
         self.reload()
 
     def _teardown(self) -> None:
         for attr in (
             "settings", "sqlite", "provider", "cost_service", "user_config_store",
             "user_config", "scorer", "llm_service", "email_service",
-            "draft_service", "bulk_service",
+            "draft_service", "bulk_service", "mailbox_service",
         ):
             setattr(self, attr, None)
 
@@ -123,6 +125,7 @@ class ServiceContainer:
                 email_service=self.email_service,
                 draft_service=self.draft_service,
             )
+            self.mailbox_service = MailboxService(self.provider)
             # Re-validate using the live settings paths (custom locations).
             self.fs_issues = check_critical_paths(settings)
             self.degraded = has_blocking(self.fs_issues)
@@ -196,6 +199,21 @@ class SendEmailRequest(BaseModel):
 class BulkPreviewRequest(BaseModel):
     count: int = 20
     mode: str = "generate"
+
+
+class MailboxActionRequest(BaseModel):
+    message_ids: list[str] = []
+
+
+class LabelActionRequest(BaseModel):
+    message_ids: list[str] = []
+    label_id: str | None = None
+    label_name: str | None = None
+    archive: bool = False
+
+
+class CreateLabelRequest(BaseModel):
+    name: str
 
 
 class SettingsRequest(BaseModel):
@@ -434,6 +452,75 @@ def bulk_stream(
     )
 
 
+# --- Mailbox actions (require gmail.modify) ----------------------------------
+def _run_mailbox_action(action_name: str, fn):
+    """Execute a MailboxService call, mapping failures to clean HTTP codes.
+
+    PermissionError (missing/expired modify scope) -> 403 so the UI can prompt a
+    Gmail reconnect; bad input -> 400; anything else (Gmail/network) -> 502.
+    """
+    _require_ready()
+    try:
+        return fn()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Mailbox action %s failed", action_name)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/mailbox/mark-read")
+def mailbox_mark_read(body: MailboxActionRequest) -> dict:
+    return _run_mailbox_action(
+        "mark_read", lambda: container.mailbox_service.mark_read(body.message_ids).as_dict()
+    )
+
+
+@app.post("/api/mailbox/mark-unread")
+def mailbox_mark_unread(body: MailboxActionRequest) -> dict:
+    return _run_mailbox_action(
+        "mark_unread", lambda: container.mailbox_service.mark_unread(body.message_ids).as_dict()
+    )
+
+
+@app.post("/api/mailbox/archive")
+def mailbox_archive(body: MailboxActionRequest) -> dict:
+    return _run_mailbox_action(
+        "archive", lambda: container.mailbox_service.archive(body.message_ids).as_dict()
+    )
+
+
+@app.post("/api/mailbox/label")
+def mailbox_label(body: LabelActionRequest) -> dict:
+    def _apply():
+        svc = container.mailbox_service
+        label_id = (body.label_id or "").strip()
+        if not label_id:
+            name = (body.label_name or "").strip()
+            if not name:
+                raise ValueError("Provide a label_id or a label_name.")
+            label_id = svc.ensure_label(name)["id"]
+        result = svc.apply_label(body.message_ids, label_id=label_id, archive=body.archive).as_dict()
+        result["label_id"] = label_id
+        return result
+
+    return _run_mailbox_action("label", _apply)
+
+
+@app.get("/api/labels")
+def list_labels() -> dict:
+    return _run_mailbox_action("list_labels", lambda: {"labels": container.mailbox_service.list_labels()})
+
+
+@app.post("/api/labels")
+def create_label(body: CreateLabelRequest) -> dict:
+    return _run_mailbox_action("create_label", lambda: container.mailbox_service.create_label(body.name))
+
+
 @app.get("/api/usage/summary")
 def usage_summary() -> dict:
     _require_ready()
@@ -582,6 +669,7 @@ def gmail_status() -> dict:
             "credentials_available": False,
             "accounts": [],
             "send_scope": False,
+            "modify_scope": False,
             "error": str(exc),
         }
 

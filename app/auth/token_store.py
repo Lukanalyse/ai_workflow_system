@@ -119,13 +119,17 @@ class TokenStore:
 
             payload = json.loads(path.read_text(encoding="utf-8") or "{}")
             creds = Credentials.from_authorized_user_info(payload, scopes)
+            # Report the *granted* scopes (persisted in the token file by
+            # ``creds.to_json()``), not the requested set, so callers can tell
+            # whether a capability (e.g. gmail.modify) was actually consented to.
+            granted = list(payload.get("scopes") or creds.scopes or [])
             return StoredAccount(
                 email=email,
                 path=path,
                 valid=bool(creds.valid),
                 expired=bool(creds.expired),
                 has_refresh_token=bool(creds.refresh_token),
-                scopes=list(creds.scopes or payload.get("scopes", [])),
+                scopes=granted,
                 last_refresh=self._last_refresh(path),
             )
         except Exception as exc:  # noqa: BLE001 - metadata read must never raise

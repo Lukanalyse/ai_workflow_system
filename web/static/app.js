@@ -325,9 +325,136 @@ function onSelectAll(checked) {
   updateSelectionUI();
 }
 
-function comingSoon(name) { toast(`${name} — coming soon`, "warn"); }
-
 function setActionStatus(text) { const el = $("ab-status"); if (el) el.textContent = text || ""; }
+
+// --- Gmail mailbox actions (mark read/unread, archive, label) ---------------
+// All actions accept 1..N ids and update the UI optimistically (no full reload).
+function disableActionButtons(disabled) {
+  ["ab-generate", "ab-archive", "ab-label", "ab-read", "ab-unread"].forEach((id) => {
+    const b = $(id); if (b) b.disabled = disabled;
+  });
+}
+
+function handleMailboxError(e) {
+  // The backend 403 detail already explains the reconnect step; surface it.
+  toast(e.message || "Action failed.", "error");
+}
+
+function setUnreadLocal(ids, unread) {
+  const set = new Set(ids);
+  lastEmails.forEach((em) => {
+    if (!set.has(em.id)) return;
+    em.is_unread = unread;
+    const labels = new Set((em.label_ids || []).map((l) => l.toUpperCase()));
+    if (unread) labels.add("UNREAD"); else labels.delete("UNREAD");
+    em.label_ids = [...labels];
+  });
+}
+function archiveLocal(ids) {
+  const set = new Set(ids);
+  lastEmails = lastEmails.filter((em) => !set.has(em.id));
+  if (selected && set.has(selected.id)) closeDetail();
+}
+function closeDetail() {
+  selected = null;
+  $("detail").classList.add("hidden");
+  $("detail-empty").classList.remove("hidden");
+}
+
+async function runMailbox(actionLabel, path, ids, optimisticFn) {
+  if (!ids.length || selectionBusy) return;
+  selectionBusy = true;
+  disableActionButtons(true);
+  setActionStatus(`${actionLabel}…`);
+  try {
+    const r = await api(path, { method: "POST", body: JSON.stringify({ message_ids: ids }) });
+    if (optimisticFn) optimisticFn(ids);
+    clearSelection();
+    renderList();
+    const failed = r.failed || 0;
+    toast(`${actionLabel}: ${r.modified} email(s)${failed ? ` · ${failed} failed` : ""}.`, failed ? "warn" : "ok");
+  } catch (e) {
+    handleMailboxError(e);
+  } finally {
+    selectionBusy = false;
+    disableActionButtons(false);
+    setActionStatus("");
+  }
+}
+
+function actionIds() { return [...selectedIds]; }
+function doArchive(ids) { return runMailbox("Archived", "/api/mailbox/archive", ids, archiveLocal); }
+function doMarkRead(ids) { return runMailbox("Marked read", "/api/mailbox/mark-read", ids, (i) => setUnreadLocal(i, false)); }
+function doMarkUnread(ids) { return runMailbox("Marked unread", "/api/mailbox/mark-unread", ids, (i) => setUnreadLocal(i, true)); }
+
+// --- Label dialog -----------------------------------------------------------
+let labelTargetIds = [];
+async function openLabelModal(ids) {
+  if (!ids.length) return;
+  labelTargetIds = ids;
+  $("label-target-count").textContent = ids.length;
+  $("label-new").value = "";
+  $("label-archive").checked = false;
+  $("label-select").innerHTML = `<option value="">— select —</option>`;
+  $("label-status").textContent = "Loading labels…";
+  $("label-modal").classList.remove("hidden");
+  try {
+    const { labels } = await api("/api/labels");
+    const opts = (labels || []).filter((l) => l.type === "user")
+      .map((l) => `<option value="${escapeHtml(l.id)}">${escapeHtml(l.name)}</option>`).join("");
+    $("label-select").innerHTML = `<option value="">— select —</option>` + opts;
+    $("label-status").textContent = opts ? "" : "No labels yet — create one below.";
+  } catch (e) {
+    // Still allow creating a label even if listing failed (e.g. scope prompt).
+    $("label-status").textContent = e.message || "Could not load labels.";
+  }
+}
+
+async function applyLabel() {
+  const ids = labelTargetIds;
+  if (!ids.length) return;
+  const labelId = $("label-select").value;
+  const newName = $("label-new").value.trim();
+  if (!labelId && !newName) { $("label-status").textContent = "Choose or create a label."; return; }
+  const archive = $("label-archive").checked;
+  $("label-apply").disabled = true;
+  $("label-status").textContent = "Applying…";
+  try {
+    const body = { message_ids: ids, archive };
+    if (newName) body.label_name = newName; else body.label_id = labelId;
+    const r = await api("/api/mailbox/label", { method: "POST", body: JSON.stringify(body) });
+    $("label-modal").classList.add("hidden");
+    if (archive) archiveLocal(ids);
+    clearSelection();
+    renderList();
+    toast(`Labelled ${r.modified} email(s)${archive ? " and archived" : ""}.`, r.failed ? "warn" : "ok");
+  } catch (e) {
+    $("label-status").textContent = "Error: " + e.message;
+  } finally {
+    $("label-apply").disabled = false;
+  }
+}
+
+// Quick actions for the currently-open email (operate on a single id).
+function renderDetailActions(em) {
+  const el = $("d-actions");
+  if (!el) return;
+  const readBtn = em.is_unread
+    ? `<button class="btn small" data-act="read">Mark read</button>`
+    : `<button class="btn small" data-act="unread">Mark unread</button>`;
+  el.innerHTML = readBtn +
+    `<button class="btn small" data-act="archive">Archive</button>` +
+    `<button class="btn small" data-act="label">Label</button>`;
+  el.querySelectorAll("button").forEach((b) =>
+    b.addEventListener("click", () => {
+      const ids = [em.id];
+      const act = b.dataset.act;
+      if (act === "read") doMarkRead(ids);
+      else if (act === "unread") doMarkUnread(ids);
+      else if (act === "archive") doArchive(ids);
+      else if (act === "label") openLabelModal(ids);
+    }));
+}
 
 // Generate + save Gmail drafts for the selected emails. Reuses the existing
 // per-email endpoints (no new backend), so it is safe and incremental. Phase 5
@@ -377,6 +504,7 @@ function selectEmail(em, li) {
   $("d-recipient").textContent = connectedEmail || "you";
   const statusBadge = `<span class="badge ${em.is_unread ? "unread-badge" : "read-badge"}">${em.is_unread ? "Unread" : "Read"}</span>`;
   $("d-badges").innerHTML = importanceDot(em) + statusBadge + metaBadges(em).join("");
+  renderDetailActions(em);
   renderAttachments($("d-attachments"), em.attachments);
   $("d-snippet").textContent = em.snippet;
   $("d-score").textContent = em.score;
@@ -764,7 +892,10 @@ function renderGmailStatus(g) {
     $("g-token").textContent = tok;
     $("g-token").className = g.valid ? "ok-text" : "warn-text";
     $("g-refresh").textContent = g.last_refresh ? new Date(g.last_refresh).toLocaleString() : "–";
-    $("g-scopes").textContent = g.send_scope ? "Read · Draft · Send" : "Read · Draft";
+    const perms = ["Read", "Draft"];
+    if (g.modify_scope) perms.push("Actions");
+    if (g.send_scope) perms.push("Send");
+    $("g-scopes").textContent = perms.join(" · ") + (g.modify_scope ? "" : " · (reconnect to enable actions)");
     $("g-oauth").textContent = g.error ? ("⚠ " + g.error) : "OAuth client present · token stored server-side";
     $("g-oauth").className = g.error ? "warn-text" : "ok-text";
     connectBtn.textContent = "Reconnect Gmail";
@@ -1142,8 +1273,12 @@ $("f-needsreply").addEventListener("click", toggleNeedsReply);
 $("select-all").addEventListener("change", (e) => onSelectAll(e.target.checked));
 $("ab-generate").addEventListener("click", runSelectionDrafts);
 $("ab-clear").addEventListener("click", clearSelection);
-document.querySelectorAll(".ab-soon").forEach((b) =>
-  b.addEventListener("click", () => comingSoon(b.dataset.soon)));
+$("ab-archive").addEventListener("click", () => doArchive(actionIds()));
+$("ab-read").addEventListener("click", () => doMarkRead(actionIds()));
+$("ab-unread").addEventListener("click", () => doMarkUnread(actionIds()));
+$("ab-label").addEventListener("click", () => openLabelModal(actionIds()));
+$("label-cancel").addEventListener("click", () => $("label-modal").classList.add("hidden"));
+$("label-apply").addEventListener("click", applyLabel);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && selectedIds.size && !isModalOpen()) clearSelection();
 });
