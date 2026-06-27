@@ -306,6 +306,65 @@ class GmailReader:
         unread = int(data.get("messagesUnread", 0) or 0)
         return total, unread
 
+    def get_label_counts_many(self, label_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """Return ``{label_id: (total, unread)}`` for many labels at once.
+
+        Replaces the Archive folder grid's per-label ``labels.get`` (N sequential
+        round-trips) with one batched call (ceil(N/50)). A per-label failure
+        degrades that one label to ``(0, 0)`` — never hiding the rest — exactly
+        like the previous per-label try/except in ArchiveService.list_folders.
+        """
+        ids = [lid for lid in dict.fromkeys(label_ids) if lid]
+        if not ids:
+            return {}
+        if not hasattr(self.service, "new_batch_http_request"):
+            return {lid: self._safe_label_counts(lid) for lid in ids}
+        try:
+            return self._batch_label_counts(ids)
+        except Exception:  # noqa: BLE001 - batch transport problem -> safe fallback
+            logger.warning(
+                "Batched label counts failed; falling back to sequential gets",
+                exc_info=True,
+            )
+            return {lid: self._safe_label_counts(lid) for lid in ids}
+
+    def _safe_label_counts(self, label_id: str) -> tuple[int, int]:
+        try:
+            return self.get_label_counts(label_id)
+        except Exception:  # noqa: BLE001 - one bad label must not hide the rest
+            logger.warning("Failed to read counts for label %s", label_id, exc_info=True)
+            return 0, 0
+
+    def _batch_label_counts(self, label_ids: list[str]) -> dict[str, tuple[int, int]]:
+        results: dict[str, tuple[int, int]] = {}
+        errors: list[str] = []
+
+        def _cb(request_id, response, exception):
+            if exception is not None:
+                errors.append(request_id)
+            else:
+                results[request_id] = (
+                    int((response or {}).get("messagesTotal", 0) or 0),
+                    int((response or {}).get("messagesUnread", 0) or 0),
+                )
+
+        for start in range(0, len(label_ids), _BATCH_GET_SIZE):
+            chunk = label_ids[start : start + _BATCH_GET_SIZE]
+            batch = self.service.new_batch_http_request()
+            for lid in chunk:
+                batch.add(
+                    self.service.users().labels().get(userId=self.user_id, id=lid),
+                    request_id=lid,
+                    callback=_cb,
+                )
+            batch.execute()
+
+        # Retry the (rare) per-label failures individually; degrade to (0,0) if
+        # a retry still fails, so a single bad label never breaks the grid.
+        for lid in errors:
+            results[lid] = self._safe_label_counts(lid)
+        return results
+
     def list_by_label(
         self, label_id: str, *, page_size: int = 25, page_token: str | None = None
     ) -> tuple[list[GmailMessage], str | None]:

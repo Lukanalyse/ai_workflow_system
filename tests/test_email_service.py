@@ -243,6 +243,85 @@ def _body(mid: str) -> dict:
     }
 
 
+class _BatchLabels:
+    def __init__(self, counts):
+        self._counts = counts  # {id: {"messagesTotal":n,"messagesUnread":m}} or Exception
+        self.get_ids = []
+
+    def get(self, *, userId, id):
+        self.get_ids.append(id)
+        return _Req(self._counts.get(id))
+
+
+class _BatchLabelSvc:
+    """Service exposing labels().get + new_batch_http_request (counts batching)."""
+
+    def __init__(self, counts, fail_ids=frozenset()):
+        self._counts = counts
+        self._fail = fail_ids
+        self.labels_obj = _BatchLabels(counts)
+        self.batch_count = 0
+
+    def users(self):
+        return self
+
+    def labels(self):
+        return self.labels_obj
+
+    def new_batch_http_request(self):
+        self.batch_count += 1
+        return _LabelCountBatch(self._counts, self._fail)
+
+
+class _LabelCountBatch:
+    def __init__(self, counts, fail_ids):
+        self._counts = counts
+        self._fail = fail_ids
+        self._items = []
+
+    def add(self, request, request_id=None, callback=None):
+        self._items.append((request_id, callback))
+
+    def execute(self):
+        for rid, cb in reversed(self._items):  # out of order on purpose
+            if rid in self._fail:
+                cb(rid, None, RuntimeError("batch label failure"))
+            else:
+                cb(rid, self._counts[rid], None)
+
+
+def test_get_label_counts_many_batches(monkeypatch) -> None:
+    import app.email.gmail_reader as gr
+
+    monkeypatch.setattr(gr, "_BATCH_GET_SIZE", 2)
+    counts = {
+        "L1": {"messagesTotal": 10, "messagesUnread": 2},
+        "L2": {"messagesTotal": 5, "messagesUnread": 0},
+        "L3": {"messagesTotal": 0, "messagesUnread": 0},
+    }
+    svc = _BatchLabelSvc(counts)
+    out = _reader_with(svc).get_label_counts_many(["L1", "L2", "L3"])
+    assert out == {"L1": (10, 2), "L2": (5, 0), "L3": (0, 0)}
+    assert svc.batch_count == 2  # ceil(3 / 2)
+
+
+def test_get_label_counts_many_degrades_bad_label_to_zero() -> None:
+    counts = {"L1": {"messagesTotal": 10, "messagesUnread": 2}, "Lbad": {}}
+    # Lbad fails both in the batch and on the individual retry (no body) -> (0,0).
+    svc = _BatchLabelSvc(counts, fail_ids={"Lbad"})
+    svc.labels_obj = _BatchLabels({"L1": counts["L1"]})  # retry get(Lbad) -> None body
+    out = _reader_with(svc).get_label_counts_many(["L1", "Lbad"])
+    assert out["L1"] == (10, 2)
+    assert out["Lbad"] == (0, 0)  # degraded, not raised
+
+
+def test_get_label_counts_many_without_batch_support() -> None:
+    counts = {"L1": {"messagesTotal": 3, "messagesUnread": 1}}
+    svc = _LabelSvc(labels=_Labels(counts))  # no new_batch_http_request
+    out = _reader_with(svc).get_label_counts_many(["L1"])
+    assert out == {"L1": (3, 1)}
+
+
 def test_get_label_counts() -> None:
     r = GmailReader.__new__(GmailReader)
     r.user_id = "me"

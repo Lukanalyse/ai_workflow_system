@@ -41,6 +41,17 @@ class FakeProvider:
             raise self._counts[label_id]
         return self._counts.get(label_id, (0, 0))
 
+    def label_counts_many(self, label_ids):
+        # Mirror the real provider contract: a per-label failure degrades to
+        # (0, 0) rather than raising, so one bad label never hides the rest.
+        out = {}
+        for lid in label_ids:
+            try:
+                out[lid] = self.label_counts(lid)
+            except Exception:
+                out[lid] = (0, 0)
+        return out
+
     def list_label_messages(self, label_id, *, page_size=25, page_token=None):
         self.list_calls.append({"label_id": label_id, "page_size": page_size, "page_token": page_token})
         return self._pages.get((label_id, page_token), ([], None))

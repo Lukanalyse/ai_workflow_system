@@ -31,6 +31,9 @@ let archiveEmails = [];          // loaded emails for the open folder (paged)
 let archiveNextToken = null;     // Gmail nextPageToken for the open folder
 let archiveSearch = "";          // client-side search within the open folder
 let archiveLoading = false;      // a folder page load is in flight
+let folderGen = 0;               // bumped on every folder navigation; stale loads are dropped
+let foldersInFlight = null;      // dedupes concurrent folder-list loads
+let prefetchInFlight = false;    // caps hover-prefetch to one request at a time
 const archiveSelectedIds = new Set();
 // In-memory cache so tab/folder switches are instant (stale-while-revalidate).
 let foldersLoadedAt = 0;                  // when the folder list was last fetched
@@ -50,18 +53,38 @@ function findEmailById(id) {
   return lastEmails.find((e) => e.id === id) || archiveEmails.find((e) => e.id === id) || null;
 }
 
-async function api(path, options) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try { detail = (await res.json()).detail || detail; } catch (_) {}
-    throw new Error(detail);
+async function api(path, options = {}) {
+  // Optional per-call timeout via AbortController. Default (no timeoutMs) keeps
+  // the previous behaviour, so slow-by-nature calls (LLM drafts) are untouched;
+  // archive calls pass a timeout so a hung Gmail request fails cleanly instead
+  // of leaving the UI stuck in a loading state.
+  const { timeoutMs, ...fetchOpts } = options;
+  let controller = null;
+  let timer = null;
+  if (timeoutMs) {
+    controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+    fetchOpts.signal = controller.signal;
   }
-  return res.json();
+  try {
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json" },
+      ...fetchOpts,
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    return res.json();
+  } catch (e) {
+    if (e && e.name === "AbortError") throw new Error("Request timed out. Please try again.");
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
+const ARCHIVE_TIMEOUT_MS = 20000;
 
 function escapeHtml(s) {
   return (s || "").replace(/[&<>"']/g, (c) =>
@@ -878,34 +901,53 @@ async function loadFolders({ force = false, background = false } = {}) {
     renderFolderGrid();
     return;
   }
+  // Dedupe concurrent loads (rapid tab switches) — share one request so the
+  // last-arriving response can't clobber an earlier render out of order.
+  if (foldersInFlight) return foldersInFlight;
   const empty = $("folder-empty");
   empty.classList.add("hidden");
   // Skeletons only on a true first load; a background refresh keeps the current
   // grid visible (no flicker).
   if (!archiveFolders.length && !background) $("folder-grid").innerHTML = skeletonCards();
-  try {
-    const { folders } = await api("/api/archive/folders");
-    archiveFolders = folders || [];
-    foldersLoadedAt = Date.now();
-    renderFolderGrid();
-  } catch (e) {
-    // A silent background refresh must never wipe the grid the user is looking at.
-    if (background) return;
-    $("folder-grid").innerHTML = "";
-    empty.textContent = "Could not load folders: " + e.message;
-    empty.classList.remove("hidden");
-  }
+  foldersInFlight = (async () => {
+    try {
+      const { folders } = await api("/api/archive/folders", { timeoutMs: ARCHIVE_TIMEOUT_MS });
+      archiveFolders = folders || [];
+      foldersLoadedAt = Date.now();
+      renderFolderGrid();
+    } catch (e) {
+      // A silent background refresh must never wipe the grid the user is looking at.
+      if (background) return;
+      renderFolderError(e.message);
+    } finally {
+      foldersInFlight = null;
+    }
+  })();
+  return foldersInFlight;
+}
+
+function renderFolderError(message) {
+  $("folder-grid").innerHTML = "";
+  const empty = $("folder-empty");
+  empty.innerHTML = `Could not load folders: ${escapeHtml(message)} ` +
+    `<button id="folder-retry" class="btn small ghost">Retry</button>`;
+  empty.classList.remove("hidden");
+  const btn = $("folder-retry");
+  if (btn) btn.addEventListener("click", () => loadFolders({ force: true }));
 }
 
 // Prefetch a folder's first page on hover-intent (once per folder) so opening
-// it is instant. Cost is bounded: one page, deduped against cache + prefetches.
+// it is instant. Cost is bounded: one page, one prefetch in flight at a time,
+// deduped against the cache + prefetches already done.
 function prefetchFolder(folderId) {
-  if (folderCache.has(folderId) || prefetchedFolders.has(folderId)) return;
+  if (prefetchInFlight || folderCache.has(folderId) || prefetchedFolders.has(folderId)) return;
+  prefetchInFlight = true;
   prefetchedFolders.add(folderId);
   const params = new URLSearchParams({ label_id: folderId, page_size: "25" });
-  api(`/api/archive/emails?${params}`)
+  api(`/api/archive/emails?${params}`, { timeoutMs: ARCHIVE_TIMEOUT_MS })
     .then((r) => folderCache.set(folderId, { emails: r.emails || [], nextToken: r.next_page_token || null, at: Date.now() }))
-    .catch(() => prefetchedFolders.delete(folderId)); // allow a later retry
+    .catch(() => prefetchedFolders.delete(folderId)) // allow a later retry
+    .finally(() => { prefetchInFlight = false; });
 }
 
 function renderFolderGrid() {
@@ -948,6 +990,7 @@ function renderFolderGrid() {
 }
 
 function openFolder(folder) {
+  folderGen++;             // invalidate any in-flight load from a prior folder
   archiveFolder = folder;
   archiveSearch = "";
   clearArchiveSelection();
@@ -975,7 +1018,9 @@ function openFolder(folder) {
 }
 
 function backToFolders() {
+  folderGen++;             // drop any pending folder-email load
   archiveFolder = null;
+  archiveLoading = false;
   clearArchiveSelection();
   $("archive-folder").classList.add("hidden");
   $("archive-home").classList.remove("hidden");
@@ -991,10 +1036,12 @@ function backToFolders() {
 async function refreshOpenFolder() {
   if (!archiveFolder) return;
   const folderId = archiveFolder.id;
+  const gen = folderGen;
   try {
     const params = new URLSearchParams({ label_id: folderId, page_size: "25" });
-    const r = await api(`/api/archive/emails?${params}`);
-    if (!archiveFolder || archiveFolder.id !== folderId) return; // user navigated away
+    const r = await api(`/api/archive/emails?${params}`, { timeoutMs: ARCHIVE_TIMEOUT_MS });
+    // Drop the response if the user navigated/reloaded meanwhile.
+    if (gen !== folderGen || !archiveFolder || archiveFolder.id !== folderId) return;
     archiveEmails = r.emails || [];
     archiveNextToken = r.next_page_token || null;
     folderCache.set(folderId, { emails: archiveEmails.slice(), nextToken: archiveNextToken, at: Date.now() });
@@ -1010,6 +1057,8 @@ function updateFolderHeaderCount() {
 
 function reloadArchiveFolder() {
   if (!archiveFolder) return;
+  folderGen++;             // supersede any in-flight load before reloading
+  archiveLoading = false;
   archiveEmails = [];
   archiveNextToken = null;
   $("arch-email-list").innerHTML = "";
@@ -1019,14 +1068,18 @@ function reloadArchiveFolder() {
 async function loadFolderEmails(reset) {
   if (!archiveFolder || archiveLoading) return;
   archiveLoading = true;
+  const gen = folderGen;
+  const folder = archiveFolder;
   const empty = $("arch-empty");
   if (reset) { empty.textContent = ""; $("arch-email-list").innerHTML = skeletonRows(6); }
   const moreBtn = $("arch-load-more");
   moreBtn.disabled = true;
   try {
-    const params = new URLSearchParams({ label_id: archiveFolder.id, page_size: "25" });
+    const params = new URLSearchParams({ label_id: folder.id, page_size: "25" });
     if (!reset && archiveNextToken) params.set("page_token", archiveNextToken);
-    const r = await api(`/api/archive/emails?${params}`);
+    const r = await api(`/api/archive/emails?${params}`, { timeoutMs: ARCHIVE_TIMEOUT_MS });
+    // Stale guard: the user opened another folder / went back while we waited.
+    if (gen !== folderGen) return;
     const incoming = r.emails || [];
     // De-dupe defensively in case a page boundary repeats an id.
     const have = new Set(archiveEmails.map((e) => e.id));
@@ -1035,15 +1088,24 @@ async function loadFolderEmails(reset) {
     renderArchiveList();
     if (reset) flashIn($("arch-email-list"));
     // Cache the loaded set so reopening this folder is instant.
-    folderCache.set(archiveFolder.id, {
+    folderCache.set(folder.id, {
       emails: archiveEmails.slice(), nextToken: archiveNextToken, at: Date.now(),
     });
   } catch (e) {
-    empty.textContent = "Error: " + e.message;
+    if (gen === folderGen) renderFolderEmailsError(e.message, reset);
   } finally {
-    archiveLoading = false;
+    if (gen === folderGen) archiveLoading = false;
     moreBtn.disabled = false;
   }
+}
+
+function renderFolderEmailsError(message, reset) {
+  const empty = $("arch-empty");
+  if (reset) $("arch-email-list").innerHTML = "";
+  empty.innerHTML = `Could not load this folder: ${escapeHtml(message)} ` +
+    `<button id="arch-retry" class="btn small ghost">Retry</button>`;
+  const btn = $("arch-retry");
+  if (btn) btn.addEventListener("click", () => { archiveLoading = false; loadFolderEmails(true); });
 }
 
 function visibleArchiveEmails() {

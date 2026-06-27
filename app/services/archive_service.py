@@ -84,22 +84,20 @@ class ArchiveService:
         "folders". Sorted by size so the busiest folders surface first; empty
         labels are hidden unless ``include_empty`` is set.
         """
+        user_labels = [
+            l for l in self._mailbox.list_labels()
+            if l.get("type") == "user" and l.get("id")
+        ]
+        # One batched counts call instead of a sequential labels.get per label.
+        counts = self._provider.label_counts_many([l["id"] for l in user_labels])
+
         folders: list[ArchiveFolder] = []
-        for label in self._mailbox.list_labels():
-            if label.get("type") != "user":
-                continue
-            label_id = label.get("id")
-            if not label_id:
-                continue
-            try:
-                total, unread = self._provider.label_counts(label_id)
-            except Exception:  # noqa: BLE001 - one bad label must not hide the rest
-                logger.exception("Failed to read counts for label %s", label_id)
-                total, unread = 0, 0
+        for label in user_labels:
+            total, unread = counts.get(label["id"], (0, 0))
             if total <= 0 and not include_empty:
                 continue
             folders.append(
-                ArchiveFolder(id=label_id, name=label.get("name", ""), total=total, unread=unread)
+                ArchiveFolder(id=label["id"], name=label.get("name", ""), total=total, unread=unread)
             )
         folders.sort(key=lambda f: (-f.total, f.name.lower()))
         return folders

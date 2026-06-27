@@ -111,6 +111,20 @@ class EmailProvider(ABC):
         """Return (total, unread) message counts for a label."""
         raise NotImplementedError("This provider does not support label counts.")
 
+    def label_counts_many(self, label_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """Return ``{label_id: (total, unread)}`` for many labels.
+
+        Default is a per-label loop; providers that can batch (Gmail) override
+        this. A per-label failure degrades to ``(0, 0)`` rather than raising.
+        """
+        out: dict[str, tuple[int, int]] = {}
+        for label_id in label_ids:
+            try:
+                out[label_id] = self.label_counts(label_id)
+            except Exception:  # noqa: BLE001 - one bad label must not hide the rest
+                out[label_id] = (0, 0)
+        return out
+
     def list_label_messages(
         self, label_id: str, *, page_size: int = 25, page_token: str | None = None
     ) -> tuple[list[EmailMessage], str | None]:
