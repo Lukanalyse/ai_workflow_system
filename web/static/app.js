@@ -60,6 +60,16 @@ function fmtNum(n) { return (Number(n) || 0).toLocaleString("en-US"); }
 function fmtMoney(n) { return "$" + (Number(n) || 0).toFixed(2); }
 function fmtMoney4(n) { return "$" + (Number(n) || 0).toFixed(4); }
 
+// Coalesce rapid-fire events (e.g. search keystrokes) into a single trailing
+// call, so we re-render once the user pauses instead of on every character.
+function debounce(fn, ms = 120) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn(...args); }, ms);
+  };
+}
+
 // Compact, Gmail-style relative date: "now", "12m", "5h", "Mar 3", "Mar 3 2025".
 function fmtRelativeDate(iso) {
   if (!iso) return "";
@@ -215,19 +225,52 @@ function renderFsIssues(fs) {
   }
 }
 
+// --- Skeleton loaders (perceived speed) -------------------------------------
+// Lightweight placeholders shown while a fetch is in flight, so the layout is
+// stable and the wait feels shorter than a bare "Loading…" line.
+function skeletonRows(n = 8) {
+  const row = `<li class="email-item skel" aria-hidden="true">
+      <div class="sk sk-av"></div>
+      <div class="email-main">
+        <div class="sk sk-line w40"></div>
+        <div class="sk sk-line w75"></div>
+        <div class="sk sk-line w55"></div>
+      </div>
+    </li>`;
+  return row.repeat(n);
+}
+function skeletonCards(n = 6) {
+  const card = `<div class="folder-card skel" aria-hidden="true">
+      <div class="sk sk-ico"></div>
+      <div class="sk sk-line w60"></div>
+      <div class="sk sk-line w35"></div>
+    </div>`;
+  return card.repeat(n);
+}
+// One-shot fade for freshly loaded content (real fetches only, not filtering),
+// so the skeleton→content swap feels smooth without flickering on every render.
+function flashIn(el) {
+  if (!el) return;
+  el.classList.remove("fade-in");
+  void el.offsetWidth; // restart the animation
+  el.classList.add("fade-in");
+}
+
 // --- Email list ------------------------------------------------------------
 async function loadEmails() {
   const empty = $("list-empty");
-  empty.textContent = "Loading…";
-  $("email-list").innerHTML = "";
+  empty.textContent = "";
   // A fresh fetch invalidates any prior selection (different rows on screen).
   clearSelection();
+  $("email-list").innerHTML = skeletonRows();
   try {
     const params = new URLSearchParams({ max: pageSize, status: statusFilter });
     const { emails } = await api(`/api/emails?${params}`);
     lastEmails = emails;
     renderList();
+    flashIn($("email-list"));
   } catch (e) {
+    $("email-list").innerHTML = "";
     empty.textContent = "Error: " + e.message;
   }
 }
@@ -252,15 +295,18 @@ function visibleEmails() {
 function renderList() {
   const list = $("email-list");
   const empty = $("list-empty");
-  list.innerHTML = "";
   const shown = visibleEmails();
   if (!lastEmails.length) {
+    list.innerHTML = "";
     empty.textContent = "No emails found for this view.";
   } else if (!shown.length) {
+    list.innerHTML = "";
     empty.textContent = "No emails match the current search/filters.";
   } else {
     empty.textContent = "";
-    shown.forEach((em) => list.appendChild(renderItem(em)));
+    // Build the whole list in one DOM write and rely on event delegation
+    // (wired once on #email-list) instead of attaching listeners per row.
+    list.innerHTML = shown.map((em) => emailRowHtml(em, selectedIds.has(em.id))).join("");
   }
   updateResultCount(shown.length);
   updateSelectionUI();
@@ -273,15 +319,15 @@ function updateResultCount(shownCount) {
   el.textContent = total ? (shownCount === total ? `${total} emails` : `${shownCount} of ${total}`) : "";
 }
 
-function renderItem(em) {
-  const li = document.createElement("li");
-  const isSel = selectedIds.has(em.id);
-  li.className = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "");
-  li.dataset.id = em.id;
+// Shared row markup for both the Inbox and Archive lists (identical layout).
+// Pure string builder — selection/open handlers are delegated on the <ul>.
+function emailRowHtml(em, isSel) {
+  const isActive = selected && selected.id === em.id;
+  const cls = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "") + (isActive ? " active" : "");
   const av = avatarFor(em);
   const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
   const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
-  li.innerHTML = `
+  return `<li class="${cls}" data-id="${escapeHtml(em.id)}">
     <label class="row-check" title="Select email">
       <input type="checkbox" class="row-cb" ${isSel ? "checked" : ""} />
     </label>
@@ -294,14 +340,28 @@ function renderItem(em) {
       <div class="subj-line">${importanceDot(em)}<span class="subj">${escapeHtml(em.subject)}</span></div>
       <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
       <div class="badges">${badges.join("")}</div>
-    </div>`;
-  // Checkbox toggles selection without opening the detail view.
-  const label = li.querySelector(".row-check");
-  const cb = li.querySelector(".row-cb");
-  label.addEventListener("click", (e) => e.stopPropagation());
-  cb.addEventListener("change", (e) => toggleSelect(em.id, e.target.checked, li));
-  li.addEventListener("click", () => selectEmail(em, li));
-  return li;
+    </div>
+  </li>`;
+}
+
+// Delegated click/change handling for an email list. Attached once per list.
+// `pool()` returns the backing array; `ctx` is the mail context for selectEmail.
+function wireEmailListDelegation(listId, pool, onToggle, ctx) {
+  const list = $(listId);
+  if (!list) return;
+  list.addEventListener("click", (e) => {
+    if (e.target.closest(".row-check")) return; // checkbox column never opens detail
+    const li = e.target.closest(".email-item");
+    if (!li) return;
+    const em = pool().find((x) => x.id === li.dataset.id);
+    if (em) selectEmail(em, li, ctx);
+  });
+  list.addEventListener("change", (e) => {
+    const cb = e.target.closest(".row-cb");
+    if (!cb) return;
+    const li = cb.closest(".email-item");
+    if (li) onToggle(li.dataset.id, cb.checked, li);
+  });
 }
 
 // --- Multi-selection + bulk action bar --------------------------------------
@@ -777,8 +837,10 @@ function enterArchive() {
 
 async function loadFolders() {
   const empty = $("folder-empty");
-  empty.textContent = "Loading folders…";
-  empty.classList.remove("hidden");
+  empty.classList.add("hidden");
+  // Only show skeletons on the first load; a background refresh keeps the
+  // current grid visible (no flicker).
+  if (!archiveFolders.length) $("folder-grid").innerHTML = skeletonCards();
   try {
     const { folders } = await api("/api/archive/folders");
     archiveFolders = folders || [];
@@ -786,6 +848,7 @@ async function loadFolders() {
   } catch (e) {
     $("folder-grid").innerHTML = "";
     empty.textContent = "Could not load folders: " + e.message;
+    empty.classList.remove("hidden");
   }
 }
 
@@ -820,6 +883,7 @@ function renderFolderGrid() {
       const folder = archiveFolders.find((f) => f.id === c.dataset.id);
       if (folder) openFolder(folder);
     }));
+  flashIn(grid);
 }
 
 function openFolder(folder) {
@@ -864,7 +928,7 @@ async function loadFolderEmails(reset) {
   if (!archiveFolder || archiveLoading) return;
   archiveLoading = true;
   const empty = $("arch-empty");
-  if (reset) empty.textContent = "Loading…";
+  if (reset) { empty.textContent = ""; $("arch-email-list").innerHTML = skeletonRows(6); }
   const moreBtn = $("arch-load-more");
   moreBtn.disabled = true;
   try {
@@ -877,6 +941,7 @@ async function loadFolderEmails(reset) {
     archiveEmails.push(...incoming.filter((e) => !have.has(e.id)));
     archiveNextToken = r.next_page_token || null;
     renderArchiveList();
+    if (reset) flashIn($("arch-email-list"));
   } catch (e) {
     empty.textContent = "Error: " + e.message;
   } finally {
@@ -893,15 +958,17 @@ function visibleArchiveEmails() {
 function renderArchiveList() {
   const list = $("arch-email-list");
   const empty = $("arch-empty");
-  list.innerHTML = "";
   const shown = visibleArchiveEmails();
   if (!archiveEmails.length) {
+    list.innerHTML = "";
     empty.textContent = "This folder is empty.";
   } else if (!shown.length) {
+    list.innerHTML = "";
     empty.textContent = "No emails match your search.";
   } else {
     empty.textContent = "";
-    shown.forEach((em) => list.appendChild(renderArchiveItem(em)));
+    // Same shared builder + delegated handlers as the inbox (wired once).
+    list.innerHTML = shown.map((em) => emailRowHtml(em, archiveSelectedIds.has(em.id))).join("");
   }
   // Result count + "Load more" affordance (paged server-side).
   const rc = $("arch-result-count");
@@ -909,36 +976,6 @@ function renderArchiveList() {
   rc.textContent = total ? (shown.length === total ? `${total} loaded` : `${shown.length} of ${total} loaded`) : "";
   $("arch-more").classList.toggle("hidden", !archiveNextToken);
   updateArchiveSelectionUI();
-}
-
-function renderArchiveItem(em) {
-  const li = document.createElement("li");
-  const isSel = archiveSelectedIds.has(em.id);
-  li.className = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "");
-  li.dataset.id = em.id;
-  const av = avatarFor(em);
-  const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
-  const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
-  li.innerHTML = `
-    <label class="row-check" title="Select email">
-      <input type="checkbox" class="row-cb" ${isSel ? "checked" : ""} />
-    </label>
-    <div class="avatar" style="background:${av.color}">${escapeHtml(av.text)}</div>
-    <div class="email-main">
-      <div class="row-top">
-        <span class="from">${escapeHtml(em.sender_name || em.sender_email)}</span>
-        <span class="date" title="${dateTitle}">${escapeHtml(fmtRelativeDate(em.received_at))}</span>
-      </div>
-      <div class="subj-line">${importanceDot(em)}<span class="subj">${escapeHtml(em.subject)}</span></div>
-      <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
-      <div class="badges">${badges.join("")}</div>
-    </div>`;
-  const label = li.querySelector(".row-check");
-  const cb = li.querySelector(".row-cb");
-  label.addEventListener("click", (e) => e.stopPropagation());
-  cb.addEventListener("change", (e) => toggleArchiveSelect(em.id, e.target.checked, li));
-  li.addEventListener("click", () => selectEmail(em, li, "archive"));
-  return li;
 }
 
 // --- Archive selection ------------------------------------------------------
@@ -1040,6 +1077,7 @@ function selectEmail(em, li, ctx = "inbox") {
   li.classList.add("active");
   $("detail-empty").classList.add("hidden");
   $("detail").classList.remove("hidden");
+  flashIn($("detail"));
   $("d-subject").textContent = em.subject;
   $("d-sender").textContent = em.sender_name ? `${em.sender_name} <${em.sender_email}>` : em.sender_email;
   $("d-date").textContent = new Date(em.received_at).toLocaleString();
@@ -1802,6 +1840,13 @@ async function finishWizardStep4(status) {
 }
 
 // ====================== Wire up =============================================
+// Event delegation: one click/change listener per list, attached once, instead
+// of three listeners per row rebuilt on every render.
+wireEmailListDelegation("email-list", () => lastEmails, toggleSelect, "inbox");
+wireEmailListDelegation("arch-email-list", () => archiveEmails, toggleArchiveSelect, "archive");
+const debouncedRenderList = debounce(renderList, 120);
+const debouncedRenderArchive = debounce(renderArchiveList, 120);
+
 $("refresh-btn").addEventListener("click", loadEmails);
 $("generate-btn").addEventListener("click", generateDraft);
 $("save-btn").addEventListener("click", saveDraft);
@@ -1815,7 +1860,7 @@ $("tab-usage").addEventListener("click", () => showTab("usage"));
 // Archive workspace
 $("arch-refresh").addEventListener("click", loadFolders);
 $("arch-back").addEventListener("click", backToFolders);
-$("arch-search").addEventListener("input", (e) => { archiveSearch = e.target.value; renderArchiveList(); });
+$("arch-search").addEventListener("input", (e) => { archiveSearch = e.target.value; debouncedRenderArchive(); });
 $("arch-select-all").addEventListener("change", (e) => onArchiveSelectAll(e.target.checked));
 $("arch-restore").addEventListener("click", () => doRestore(archActionIds()));
 $("arch-generate").addEventListener("click", runArchiveDrafts);
@@ -1833,7 +1878,7 @@ $("es-cancel").addEventListener("click", () => { $("estimate-modal").classList.a
 $("es-continue").addEventListener("click", startBulk);
 
 // Inbox controls (search, status, page size, filters, selection, action bar)
-$("search-box").addEventListener("input", (e) => { searchQuery = e.target.value; renderList(); });
+$("search-box").addEventListener("input", (e) => { searchQuery = e.target.value; debouncedRenderList(); });
 $("page-size").addEventListener("change", (e) => { pageSize = e.target.value; loadEmails(); });
 document.querySelectorAll("#status-seg .seg-btn").forEach((b) =>
   b.addEventListener("click", () => applyStatus(b.dataset.status)));
