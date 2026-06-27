@@ -97,12 +97,22 @@ class SQLiteManager:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # A short busy timeout makes concurrent access (FastAPI runs sync
+        # endpoints in a threadpool) wait briefly for a lock instead of failing
+        # with "database is locked". ``synchronous=NORMAL`` is the recommended,
+        # safe pairing with WAL and noticeably speeds up writes.
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
+            # Write-Ahead Logging: readers don't block the writer (and vice
+            # versa), so the inbox listing's reads no longer contend with a
+            # draft/analysis write. Persisted in the DB file header (set once).
+            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS processed_emails (
@@ -208,8 +218,16 @@ class SQLiteManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_filing_sender ON filing_history(sender)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_filing_domain ON filing_history(domain)")
+            # Expression index matching how senders are queried — known_senders()
+            # and sender_seen() filter on LOWER(sender), so a plain column index
+            # wouldn't be used. This turns those lookups from a full table scan
+            # into an index seek as the processed-email history grows.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_gmail_sender_lower "
+                "ON gmail_processed_emails(LOWER(sender))"
+            )
             # Schema version marker for future migrations (idempotent set).
-            conn.execute("PRAGMA user_version = 3")
+            conn.execute("PRAGMA user_version = 4")
             conn.commit()
 
     def already_processed(self, message_id: str) -> bool:
