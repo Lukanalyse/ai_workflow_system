@@ -1,31 +1,66 @@
 :root {
-  --bg: #eef1f5;
+  /* Surfaces & lines (slightly softer, more modern/airy) */
+  --bg: #f4f6f9;
   --panel: #ffffff;
   --panel-2: #f7f9fc;
-  --border: #e1e6ee;
-  --border-strong: #cdd5e1;
-  --text: #131a24;
-  --muted: #5d6b7e;
+  --border: #e6e9ef;
+  --border-strong: #d4dae3;
+  /* Text */
+  --text: #1a2230;
+  --text-2: #475569;
+  --muted: #64748b;
+  /* Brand accent (reserved for primary actions + active state) */
   --accent: #2563eb;
   --accent-d: #1d4ed8;
   --accent-soft: #eef4ff;
-  --hover: #f3f6fc;
+  /* AI accent (reserved for Smart Archive, everywhere consistent) */
+  --ai: #7c3aed;
+  --ai-d: #6d28d9;
+  --ai-soft: #f5f3ff;
+  /* States */
+  --hover: #f2f5fa;
   --selected: #e9f1ff;
   --ok: #16a34a;
   --warn: #d97706;
   --err: #dc2626;
-  --radius: 10px;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, .06);
-  --shadow-md: 0 4px 14px rgba(15, 23, 42, .08);
+
+  /* Spacing scale (4px grid) */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+  --s-4: 16px; --s-6: 24px; --s-8: 32px;
+  /* Radii */
+  --r-control: 8px;
+  --r-card: 12px;
+  --r-pill: 999px;
+  --radius: 12px;            /* legacy alias -> card radius */
+  /* Control sizing (one height everywhere) */
+  --h-control: 34px;
+  --h-sm: 28px;
+  /* Elevation + focus */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+  --shadow-md: 0 6px 20px rgba(15, 23, 42, .08);
+  --ring: 0 0 0 3px rgba(37, 99, 235, .18);
 }
 
 * { box-sizing: border-box; }
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   background: var(--bg);
   color: var(--text);
 }
+
+/* Consistent keyboard focus across every interactive control. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-color: var(--accent);
+}
+/* Form controls inherit the app font (Safari/Firefox don't by default). */
+button, input, select, textarea { font-family: inherit; }
 
 .topbar {
   display: flex;
@@ -53,28 +88,54 @@ body {
 .health.degraded { background: #fffbeb; color: var(--warn); }
 .health.error { background: #fef2f2; color: var(--err); }
 
+/* ===================== Button system (one set of rules) ===================== */
 .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--h-control); padding: 0 14px;
   border: 1px solid var(--border); background: var(--panel); color: var(--text);
-  padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 14px;
+  border-radius: var(--r-control); cursor: pointer;
+  font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease;
 }
-.btn:hover { background: #f0f2f5; }
+.btn:hover { background: var(--hover); border-color: var(--border-strong); }
+.btn:active { transform: translateY(.5px); }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--panel); border-color: var(--border); }
+
+/* Primary — reserved for the single main action of a context. */
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: var(--accent-d); }
-.btn.primary:disabled { background: #9db4e8; border-color: #9db4e8; cursor: not-allowed; }
-.btn.ghost { background: transparent; }
-.btn.small { padding: 6px 10px; font-size: 13px; }
+.btn.primary:hover { background: var(--accent-d); border-color: var(--accent-d); }
+.btn.primary:disabled { background: var(--accent); border-color: var(--accent); }
+
+/* Ghost — tertiary / icon buttons. */
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--hover); border-color: transparent; color: var(--text); }
+
+/* AI — Smart Archive, consistent violet treatment everywhere. */
+.btn.ai { background: var(--ai-soft); border-color: #ddd4f7; color: var(--ai-d); }
+.btn.ai:hover { background: #ece6fb; border-color: #cbbef2; }
+
+/* Danger. */
 .btn.danger { background: var(--err); border-color: var(--err); color: #fff; }
-.btn.danger:hover { background: #b91c1c; }
-.btn.danger:disabled { background: #f0a3a3; border-color: #f0a3a3; cursor: not-allowed; }
+.btn.danger:hover { background: #b91c1c; border-color: #b91c1c; }
+.btn.danger:disabled { background: var(--err); border-color: var(--err); }
+
+/* Sizes. */
+.btn.small { height: var(--h-sm); padding: 0 11px; font-size: 12.5px; }
+
+/* Icon-only button (square). */
+.btn.icon { width: var(--h-control); padding: 0; }
+.btn.icon.small { width: var(--h-sm); }
+
 .tag.danger-tag { background: #fef2f2; color: var(--err); }
 
 .layout { display: grid; grid-template-columns: 400px 1fr; gap: 16px; padding: 16px 20px; height: calc(100vh - 102px); }
 .list-pane, .detail-pane {
   background: var(--panel); border: 1px solid var(--border);
-  border-radius: var(--radius); overflow: auto; padding: 14px;
+  border-radius: var(--r-card); overflow: auto; padding: var(--s-4);
   box-shadow: var(--shadow-sm);
 }
-.detail-pane { padding: 22px 24px; }
+.detail-pane { padding: var(--s-6) var(--s-6); }
 
 /* Responsive: stack the two panes and release the fixed viewport height so the
    page scrolls naturally on tablets/phones. No behavior change — layout only. */
@@ -94,12 +155,12 @@ body {
 .list-controls { margin-bottom: 10px; font-size: 13px; color: var(--muted); }
 .list-controls input { width: 56px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; }
 
-.email-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.email-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-2); }
 
 /* Email card: avatar + content, Gmail/Linear-style. */
 .email-item {
-  display: flex; gap: 11px; align-items: flex-start;
-  padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 13px 14px; border: 1px solid var(--border); border-radius: var(--r-card);
   background: var(--panel); cursor: pointer;
   transition: background .12s ease, border-color .12s ease, box-shadow .12s ease, transform .06s ease;
 }
@@ -187,22 +248,28 @@ body {
 .toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 
 /* Segmented status control (All / Unread / Read). */
-.seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+.seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 3px; }
 .seg-btn {
-  border: none; background: transparent; cursor: pointer; font-size: 12.5px; color: var(--muted);
-  padding: 5px 12px; border-radius: 6px; transition: background .12s ease, color .12s ease;
+  height: var(--h-sm); border: none; background: transparent; cursor: pointer;
+  font-size: 12.5px; font-weight: 500; color: var(--muted);
+  padding: 0 14px; border-radius: var(--r-pill);
+  transition: background .12s ease, color .12s ease, box-shadow .12s ease;
 }
 .seg-btn:hover { color: var(--text); }
 .seg-btn.active { background: var(--panel); color: var(--accent-d); font-weight: 600; box-shadow: var(--shadow-sm); }
 
 .size-sel { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
-.size-sel select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; background: var(--panel); color: var(--text); }
+.size-sel select {
+  height: var(--h-sm); padding: 0 8px; border: 1px solid var(--border);
+  border-radius: var(--r-control); font-size: 13px; background: var(--panel); color: var(--text);
+}
 
-/* Filter chips. */
+/* Filter chips (toggle pills) — same height/shape as the segment. */
 .filter-chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .fchip {
+  display: inline-flex; align-items: center; gap: 6px; height: var(--h-sm);
   border: 1px solid var(--border); background: var(--panel); cursor: pointer;
-  font-size: 12.5px; color: var(--muted); padding: 5px 11px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 500; color: var(--muted); padding: 0 12px; border-radius: var(--r-pill);
   transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
 .fchip:hover { border-color: var(--border-strong); color: var(--text); }
@@ -226,9 +293,6 @@ body {
 .ab-count b { color: var(--accent-d); font-variant-numeric: tabular-nums; }
 .ab-actions { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
 .ab-status { font-variant-numeric: tabular-nums; font-size: 12.5px; }
-/* Smart Archive button: subtle AI accent. */
-.btn.ai { border-color: #bcd2fb; background: var(--accent-soft); color: var(--accent-d); }
-.btn.ai:hover { background: #e0ebff; }
 
 /* Smart Archive plan / result rows. */
 .plan-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
@@ -387,10 +451,12 @@ textarea {
 .bulk-head { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
 .bulk-counts { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
 .chip {
-  border: 1px solid var(--border); background: var(--panel); cursor: pointer;
-  padding: 4px 10px; border-radius: 999px; font-size: 13px; min-width: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
+  height: var(--h-sm); border: 1px solid var(--border); background: var(--panel); cursor: pointer;
+  padding: 0 12px; border-radius: var(--r-pill); font-size: 12.5px; font-weight: 500; min-width: 36px;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
 }
-.chip:hover { border-color: var(--accent); }
+.chip:hover { border-color: var(--border-strong); }
 .chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .bulk-actions { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
 .bulk-actions .btn { flex: 1; }
