@@ -378,7 +378,9 @@ function emailRowHtml(em, isSel) {
   const isActive = selected && selected.id === em.id;
   const cls = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "") + (isActive ? " active" : "");
   const av = avatarFor(em);
-  const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
+  // Lighter row: priority dot conveys importance; only meaningful badges
+  // (handled / attachments / category) show — no noisy "score" chip.
+  const badges = metaBadges(em);
   const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
   return `<li class="${cls}" data-id="${escapeHtml(em.id)}">
     <label class="row-check" title="Select email">
@@ -392,7 +394,7 @@ function emailRowHtml(em, isSel) {
       </div>
       <div class="subj-line">${importanceDot(em)}<span class="subj">${escapeHtml(em.subject)}</span></div>
       <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
-      <div class="badges">${badges.join("")}</div>
+      ${badges.length ? `<div class="badges">${badges.join("")}</div>` : ""}
     </div>
   </li>`;
 }
@@ -816,13 +818,15 @@ function renderSmartResult(r) {
 function renderDetailActions(em) {
   const el = $("d-actions");
   if (!el) return;
+  // Discreet icon buttons for the secondary actions; the read pane's primary
+  // action (Generate / Restore) stands on its own.
   const readBtn = em.is_unread
-    ? `<button class="btn small" data-act="read">Mark read</button>`
-    : `<button class="btn small" data-act="unread">Mark unread</button>`;
+    ? `<button class="btn ghost icon small" data-act="read" title="Mark as read" aria-label="Mark as read">✓</button>`
+    : `<button class="btn ghost icon small" data-act="unread" title="Mark as unread" aria-label="Mark as unread">◌</button>`;
   const archiveButtons = mailContext === "archive"
     ? `<button class="btn small primary" data-act="restore">↩ Restore to Inbox</button>`
-    : `<button class="btn small" data-act="move"><span aria-hidden="true">📁</span> Move to folder</button>` +
-      `<button class="btn small" data-act="label"><span aria-hidden="true">🏷️</span> Label</button>`;
+    : `<button class="btn ghost icon small" data-act="move" title="Move to folder" aria-label="Move to folder">📁</button>` +
+      `<button class="btn ghost icon small" data-act="label" title="Apply label" aria-label="Apply label">🏷️</button>`;
   el.innerHTML = readBtn + archiveButtons;
   el.querySelectorAll("button").forEach((b) =>
     b.addEventListener("click", () => {
