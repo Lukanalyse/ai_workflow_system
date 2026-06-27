@@ -37,6 +37,31 @@ test("clicking an email opens the read pane", async () => {
   assert.ok($(app.document, "detail-empty").classList.contains("hidden"));
 });
 
+test("opening an email loads its full body into the Email card", async () => {
+  const app = makeApp({ routes: {
+    "GET /api/emails": { emails: [cand("m1", "Report")] },
+    "GET /api/emails/m1": { id: "m1", subject: "Report", body: "Full body line one\n\nline two", attachments: [] },
+  } });
+  await app.window.loadEmails();
+  click(app.window, app.document.querySelector("#email-list .email-item .subj"));
+  await waitFor(() => $(app.document, "d-body").textContent.includes("Full body line one"));
+  assert.equal(app.callsTo("GET", "/api/emails/m1").length, 1);
+});
+
+test("an email with attachments shows the Attachments card", async () => {
+  const app = makeApp({ routes: {
+    "GET /api/emails": { emails: [cand("m1")] },
+    "GET /api/emails/m1": { id: "m1", body: "hi", attachments: [
+      { name: "invoice.pdf", mime_type: "application/pdf", size: 1024, attachment_id: "a1" },
+    ] },
+  } });
+  await app.window.loadEmails();
+  assert.ok($(app.document, "d-attach-card").classList.contains("hidden")); // hidden before open
+  click(app.window, app.document.querySelector("#email-list .email-item .subj"));
+  await waitFor(() => !$(app.document, "d-attach-card").classList.contains("hidden"));
+  assert.match($(app.document, "d-attachments").textContent, /invoice\.pdf/);
+});
+
 // --- Inbox / Archive navigation ---------------------------------------------
 test("switching tabs toggles inbox/archive panes", async () => {
   const app = makeApp({ routes: { "GET /api/archive/folders": { folders: [] } } });

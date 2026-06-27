@@ -769,3 +769,51 @@ textarea {
   .bulk-bar #bulk-gensave-all { margin-left: 0; }
   .tabs { margin-left: var(--s-3); margin-right: var(--s-3); }
 }
+
+/* ===================== Read pane — content-first cards ===================== */
+.detail { display: flex; flex-direction: column; gap: var(--s-4); }
+.d-head-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-3); }
+.d-head-top h2 { flex: 1; min-width: 0; }
+.detail-id { display: flex; align-items: center; gap: 12px; }
+.detail-id .detail-badges { margin-left: auto; }
+
+/* Section card: tinted background + label, so each zone is instantly identifiable. */
+.read-card { border: 1px solid var(--border); border-radius: var(--r-card); padding: var(--s-4); }
+.rc-head {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .6px; font-weight: 700;
+  color: var(--muted); margin-bottom: 10px;
+}
+.rc-head .rc-ico { font-size: 13px; }
+.rc-count { font-weight: 600; color: var(--muted); letter-spacing: 0; text-transform: none; }
+
+/* Very light, non-aggressive tints — one per zone. */
+.card-email  { background: #fcfcfd; border-color: #eceef2; }
+.card-attach { background: #fffdf6; border-color: #f1e7c9; }
+.card-ai     { background: #fbfaff; border-color: #e9e3fb; }
+.card-draft  { background: #f8fbff; border-color: #dbe8fb; }
+
+/* Email body — a real reading column. */
+.mail-body {
+  max-width: 68ch; font-size: 14.5px; line-height: 1.7; color: var(--text-2);
+  white-space: pre-wrap; word-wrap: break-word;
+}
+.mail-body.loading { opacity: .5; }
+
+/* AI card inherits the section tint — drop its own chrome. */
+.card-ai .ai-card, .card-ai .ai-empty { border: none; background: transparent; padding: 0; }
+.card-ai .ai-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+/* Draft card — the action zone. */
+.card-draft .controls { margin-bottom: 10px; }
+.card-draft textarea { background: var(--panel); }
+
+/* Replyability metrics — collapsed, secondary, at the bottom. */
+.reply-disclosure { border: 1px solid var(--border); border-radius: var(--r-control); padding: 8px 12px; background: var(--panel-2); }
+.reply-disclosure > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--muted);
+  list-style: none; display: flex; align-items: center; gap: 8px;
+}
+.reply-disclosure > summary::-webkit-details-marker { display: none; }
+.reply-disclosure > summary b { color: var(--text); font-variant-numeric: tabular-nums; }
+.reply-disclosure[open] > summary { margin-bottom: 8px; }

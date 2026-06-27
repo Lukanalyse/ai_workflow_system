@@ -586,8 +586,9 @@ function renderAiSection(em) {
   const a = em.ai;
   if (!a) {
     wrap.innerHTML =
+      `<div class="ai-head"><span>✨ AI Assistant</span></div>` +
       `<div class="ai-empty">` +
-      `<span class="muted">No AI analysis yet — understand this email in one click.</span>` +
+      `<span class="muted">Understand this email in one click — summary, category, priority and a suggested reply.</span>` +
       `<button id="d-analyze" class="btn small primary">✨ Analyze with AI</button></div>`;
     $("d-analyze").addEventListener("click", () => analyzeCurrent(false));
     return;
@@ -597,7 +598,7 @@ function renderAiSection(em) {
   const catCls = "cat-" + categorySlug(a.category);
   wrap.innerHTML =
     `<div class="ai-card">
-      <div class="ai-head"><span>✨ AI Analysis</span><span class="ai-conf" title="Model confidence">${conf}%</span></div>
+      <div class="ai-head"><span>✨ AI Assistant</span><span class="ai-conf" title="Model confidence">${conf}%</span></div>
       <div class="ai-grid">
         <div class="ai-row"><span class="ai-k">Category</span><span class="badge cat ${catCls}">${escapeHtml(a.category)}</span></div>
         <div class="ai-row"><span class="ai-k">Priority</span><span class="prio ${prioCls}">${escapeHtml(a.priority)}</span></div>
@@ -1240,6 +1241,39 @@ function runArchiveDrafts() {
   return generateDraftsFor(archActionIds(), { btnId: "arch-generate", statusFn: setArchStatus });
 }
 
+// Full email body — fetched on open, cached so re-opening is instant. The
+// server returns readable text (HTML flattened), rendered as text (no XSS risk).
+const bodyCache = new Map();
+async function renderBody(em) {
+  const el = $("d-body");
+  if (!el) return;
+  el.classList.remove("loading");
+  if (bodyCache.has(em.id)) { el.textContent = bodyCache.get(em.id); return; }
+  el.textContent = em.snippet || "";        // instant placeholder
+  el.classList.add("loading");
+  try {
+    const data = await api(`/api/emails/${em.id}`);
+    if (!selected || selected.id !== em.id) return;  // user navigated away
+    const body = (data.body || em.snippet || "").trim();
+    bodyCache.set(em.id, body);
+    el.textContent = body;
+    if (Array.isArray(data.attachments) && data.attachments.length) {
+      renderAttachmentCard(em, data.attachments);
+    }
+  } catch (_) {
+    /* keep the snippet placeholder on failure */
+  } finally {
+    if (selected && selected.id === em.id) el.classList.remove("loading");
+  }
+}
+
+function renderAttachmentCard(em, attachments) {
+  const list = attachments || em.attachments || [];
+  renderAttachments($("d-attachments"), list);
+  $("d-attach-count").textContent = list.length ? `· ${list.length}` : "";
+  $("d-attach-card").classList.toggle("hidden", list.length === 0);
+}
+
 function selectEmail(em, li, ctx = "inbox") {
   selected = em;
   mailContext = ctx;
@@ -1260,8 +1294,8 @@ function selectEmail(em, li, ctx = "inbox") {
   $("d-badges").innerHTML = importanceDot(em) + statusBadge + metaBadges(em).join("");
   renderDetailActions(em);
   renderAiSection(em);
-  renderAttachments($("d-attachments"), em.attachments);
-  $("d-snippet").textContent = em.snippet;
+  renderAttachmentCard(em, em.attachments);
+  renderBody(em);
   $("d-score").textContent = em.score;
   const cls = $("d-class");
   cls.textContent = em.classification || (em.replyable ? "Reply required" : "No reply needed");

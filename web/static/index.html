@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=18" />
+  <link rel="stylesheet" href="/static/style.css?v=19" />
 </head>
 <body>
   <header class="topbar">
@@ -203,67 +203,78 @@
     <section class="detail-pane">
       <div id="detail-empty" class="muted center">Select an email to generate a reply draft.</div>
       <div id="detail" class="detail hidden">
+        <!-- Header: subject + identity + discreet actions -->
         <header class="detail-head">
-          <h2 id="d-subject"></h2>
+          <div class="d-head-top">
+            <h2 id="d-subject"></h2>
+            <div id="d-actions" class="detail-actions"></div>
+          </div>
           <div class="detail-id">
             <div class="avatar avatar-lg" id="d-avatar"></div>
             <div class="detail-id-lines">
               <div class="detail-from"><span id="d-sender"></span></div>
               <div class="detail-sub">To <span id="d-recipient">you</span> · <span id="d-date"></span></div>
             </div>
+            <div id="d-badges" class="detail-badges"></div>
           </div>
-          <div id="d-badges" class="detail-badges"></div>
-          <div id="d-attachments" class="attachments hidden"></div>
-          <div id="d-actions" class="detail-actions"></div>
         </header>
 
-        <div id="d-reply" class="replyability">
-          <div class="reply-head">
-            <span>Replyability score: <b id="d-score">–</b></span>
-            <span id="d-class" class="reply-class"></span>
-          </div>
-          <ul id="d-reasons" class="reply-reasons"></ul>
-        </div>
-
-        <section id="d-ai-wrap" class="ai-wrap"></section>
-
-        <section class="content-block">
-          <h3 class="block-label">Message</h3>
-          <p id="d-snippet" class="snippet"></p>
+        <!-- 1) Email body — the priority -->
+        <section class="read-card card-email">
+          <div class="rc-head"><span class="rc-ico" aria-hidden="true">✉️</span> Email</div>
+          <div id="d-body" class="mail-body"></div>
         </section>
 
-        <div class="controls">
-          <label>Tone
-            <select id="d-tone">
-              <option value="professional">professional</option>
-              <option value="friendly">friendly</option>
-              <option value="formal">formal</option>
-              <option value="concise">concise</option>
-              <option value="detailed">detailed</option>
-            </select>
-          </label>
-          <label>Language
-            <select id="d-language">
-              <option value="auto">auto</option>
-              <option value="fr">French</option>
-              <option value="en">English</option>
-            </select>
-          </label>
-          <button id="generate-btn" class="btn">Generate draft</button>
-        </div>
+        <!-- 2) Attachments (hidden when none) -->
+        <section id="d-attach-card" class="read-card card-attach hidden">
+          <div class="rc-head"><span class="rc-ico" aria-hidden="true">📎</span> Attachments <span id="d-attach-count" class="rc-count"></span></div>
+          <div id="d-attachments" class="attachments"></div>
+        </section>
 
-        <div id="d-summary-wrap" class="summary hidden">
-          <h3>Summary</h3>
-          <p id="d-summary"></p>
-        </div>
+        <!-- 3) AI Assistant -->
+        <section class="read-card card-ai">
+          <div id="d-ai-wrap" class="ai-wrap"></div>
+        </section>
 
-        <label class="draft-label">Draft reply</label>
-        <textarea id="d-draft" rows="14" placeholder="Generated draft will appear here…"></textarea>
-        <div class="controls">
-          <button id="save-btn" class="btn primary" disabled>Save to Gmail Drafts</button>
-          <button id="send-btn" class="btn danger hidden" disabled>Send email</button>
-          <span id="save-status" class="muted"></span>
-        </div>
+        <!-- 4) Draft Reply — the action zone -->
+        <section class="read-card card-draft">
+          <div class="rc-head"><span class="rc-ico" aria-hidden="true">✍️</span> Draft Reply</div>
+          <div class="controls">
+            <label>Tone
+              <select id="d-tone">
+                <option value="professional">professional</option>
+                <option value="friendly">friendly</option>
+                <option value="formal">formal</option>
+                <option value="concise">concise</option>
+                <option value="detailed">detailed</option>
+              </select>
+            </label>
+            <label>Language
+              <select id="d-language">
+                <option value="auto">auto</option>
+                <option value="fr">French</option>
+                <option value="en">English</option>
+              </select>
+            </label>
+            <button id="generate-btn" class="btn primary">Generate draft</button>
+          </div>
+          <div id="d-summary-wrap" class="summary hidden">
+            <h3>Summary</h3>
+            <p id="d-summary"></p>
+          </div>
+          <textarea id="d-draft" rows="12" placeholder="Generated draft will appear here…"></textarea>
+          <div class="controls">
+            <button id="save-btn" class="btn primary" disabled>Save to Gmail Drafts</button>
+            <button id="send-btn" class="btn danger hidden" disabled>Send email</button>
+            <span id="save-status" class="muted"></span>
+          </div>
+        </section>
+
+        <!-- 5) Metrics — secondary, collapsed -->
+        <details id="d-reply" class="reply-disclosure">
+          <summary>Replyability details · score <b id="d-score">–</b> <span id="d-class" class="reply-class"></span></summary>
+          <ul id="d-reasons" class="reply-reasons"></ul>
+        </details>
       </div>
     </section>
   </main>
@@ -612,6 +623,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=22"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>

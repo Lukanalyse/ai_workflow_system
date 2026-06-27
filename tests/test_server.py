@@ -168,6 +168,51 @@ def test_mailbox_missing_scope_returns_403(client, restore_container):
     assert "reconnect" in r.json()["detail"].lower()
 
 
+# --- Read pane: full email body ----------------------------------------------
+def _fake_email(mid="m1", body="Body text"):
+    from datetime import datetime, timezone
+
+    from app.providers.base import EmailMessage
+
+    return EmailMessage(
+        id=mid, thread_id="t1", subject="Hello", sender_email="a@b.com", sender_name="A",
+        internet_message_id="<x>", received_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        snippet="snip", body_text=body, label_ids=[], has_attachments=False,
+        attachment_names=[], attachments=[],
+    )
+
+
+def test_get_email_flattens_html_body(client, restore_container):
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def get_message(self, mid):
+            return _fake_email(mid, body="<p>Hi <b>there</b></p><div>line two</div>")
+
+    c.email_service = _Svc()
+    r = client.get("/api/emails/m1")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["subject"] == "Hello" and body["id"] == "m1"
+    assert "<" not in body["body"] and "there" in body["body"]  # HTML flattened to text
+
+
+def test_get_email_preserves_plain_body(client, restore_container):
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def get_message(self, mid):
+            return _fake_email(mid, body="Line one\n\nLine two")
+
+    c.email_service = _Svc()
+    r = client.get("/api/emails/m1")
+    assert r.json()["body"] == "Line one\n\nLine two"  # no signature/thread stripping
+
+
 # --- Archive workspace endpoints (Phase 7) -----------------------------------
 def test_archive_folders_ok(client, restore_container):
     from app.services.archive_service import ArchiveFolder

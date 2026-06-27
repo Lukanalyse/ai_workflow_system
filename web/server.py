@@ -269,6 +269,26 @@ class GmailCredentialsRequest(BaseModel):
     credentials: str  # raw contents of the Google OAuth client JSON file
 
 
+import re as _re
+
+# Heuristic: the reader prefers text/plain, but an HTML-only email leaves HTML
+# in body_text. Detect it and flatten to readable text (no signature/thread
+# stripping — that cleanup is for the LLM, not for human reading).
+_HTML_BODY_RE = _re.compile(
+    r"<(?:/?(?:html|body|div|p|br|span|table|tr|td|a|img|ul|ol|li|h[1-6]|b|strong|em)\b|!doctype)",
+    _re.IGNORECASE,
+)
+
+
+def _readable_body(text: str) -> str:
+    text = text or ""
+    if _HTML_BODY_RE.search(text):
+        from app.email.clean_email import strip_html
+
+        return strip_html(text)
+    return text.strip()
+
+
 def _mask(value: str) -> str:
     value = (value or "").strip()
     if not value:
@@ -367,6 +387,29 @@ def list_emails(max: str = "20", status: str = "unread") -> dict:
         logger.exception("Failed to list emails")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"emails": [asdict(c) for c in candidates]}
+
+
+@app.get("/api/emails/{message_id}")
+def get_email(message_id: str) -> dict:
+    """Full message for the read pane: real body (not just the snippet) + attachments."""
+    _require_ready()
+    try:
+        msg = container.email_service.get_message(message_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to fetch email %s", message_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "id": msg.id,
+        "thread_id": msg.thread_id,
+        "subject": msg.subject,
+        "sender_name": msg.sender_name,
+        "sender_email": msg.sender_email,
+        "received_at": msg.received_at.isoformat(),
+        "snippet": msg.snippet,
+        "body": _readable_body(msg.body_text or msg.snippet),
+        "has_attachments": msg.has_attachments,
+        "attachments": [asdict(a) for a in msg.attachments],
+    }
 
 
 @app.post("/api/emails/{message_id}/draft")
