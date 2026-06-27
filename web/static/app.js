@@ -1156,6 +1156,8 @@ function clearArchiveSelection() {
   archiveSelectedIds.clear();
   document.querySelectorAll("#arch-email-list .email-item.selected").forEach((n) => n.classList.remove("selected"));
   document.querySelectorAll("#arch-email-list .row-cb:checked").forEach((cb) => { cb.checked = false; });
+  const menu = $("arch-menu");
+  if (menu) menu.classList.add("hidden");
   updateArchiveSelectionUI();
 }
 function updateArchiveSelectionUI() {
@@ -2037,11 +2039,9 @@ $("arch-back").addEventListener("click", backToFolders);
 $("arch-search").addEventListener("input", (e) => { archiveSearch = e.target.value; debouncedRenderArchive(); });
 $("arch-select-all").addEventListener("change", (e) => onArchiveSelectAll(e.target.checked));
 $("arch-restore").addEventListener("click", () => doRestore(archActionIds()));
-$("arch-generate").addEventListener("click", runArchiveDrafts);
 $("arch-smart").addEventListener("click", () => openSmartArchive(archActionIds(), "archive"));
-$("arch-read").addEventListener("click", () => doArchMarkRead(archActionIds()));
-$("arch-unread").addEventListener("click", () => doArchMarkUnread(archActionIds()));
 $("arch-clear").addEventListener("click", clearArchiveSelection);
+// arch-generate / arch-read / arch-unread are wired via the archive More menu.
 $("arch-load-more").addEventListener("click", () => loadFolderEmails(false));
 
 document.querySelectorAll(".chip").forEach((c) =>
@@ -2062,28 +2062,41 @@ $("select-all").addEventListener("change", (e) => onSelectAll(e.target.checked))
 $("ab-generate").addEventListener("click", runSelectionDrafts);
 $("ab-smart").addEventListener("click", () => openSmartArchive(actionIds()));
 $("ab-clear").addEventListener("click", clearSelection);
-// More actions menu (open/close + items).
-function setMoreMenu(open) {
-  const menu = $("ab-menu");
+// More actions menus (inbox + archive share one open/close helper).
+function toggleMenu(menuId, btnId, open) {
+  const menu = $(menuId);
+  if (!menu) return;
   const show = open === undefined ? menu.classList.contains("hidden") : open;
   menu.classList.toggle("hidden", !show);
-  $("ab-more").setAttribute("aria-expanded", show ? "true" : "false");
+  const btn = $(btnId); if (btn) btn.setAttribute("aria-expanded", show ? "true" : "false");
 }
-const closeMoreMenu = () => setMoreMenu(false);
-$("ab-more").addEventListener("click", (e) => { e.stopPropagation(); setMoreMenu(); });
-$("ab-move").addEventListener("click", () => { closeMoreMenu(); openLabelModal(actionIds(), "move"); });
-$("ab-label").addEventListener("click", () => { closeMoreMenu(); openLabelModal(actionIds(), "label"); });
-$("ab-read").addEventListener("click", () => { closeMoreMenu(); doMarkRead(actionIds()); });
-$("ab-unread").addEventListener("click", () => { closeMoreMenu(); doMarkUnread(actionIds()); });
-$("ab-clear-menu").addEventListener("click", () => { closeMoreMenu(); clearSelection(); });
-document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeMoreMenu(); });
+function closeAllMenus() {
+  toggleMenu("ab-menu", "ab-more", false);
+  toggleMenu("arch-menu", "arch-more-btn", false);
+}
+const closeMoreMenu = closeAllMenus; // back-compat alias
+// Inbox selection menu
+$("ab-more").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu("ab-menu", "ab-more"); });
+$("ab-move").addEventListener("click", () => { closeAllMenus(); openLabelModal(actionIds(), "move"); });
+$("ab-label").addEventListener("click", () => { closeAllMenus(); openLabelModal(actionIds(), "label"); });
+$("ab-read").addEventListener("click", () => { closeAllMenus(); doMarkRead(actionIds()); });
+$("ab-unread").addEventListener("click", () => { closeAllMenus(); doMarkUnread(actionIds()); });
+$("ab-clear-menu").addEventListener("click", () => { closeAllMenus(); clearSelection(); });
+// Archive selection menu
+$("arch-more-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleMenu("arch-menu", "arch-more-btn"); });
+$("arch-generate").addEventListener("click", () => { closeAllMenus(); runArchiveDrafts(); });
+$("arch-read").addEventListener("click", () => { closeAllMenus(); doArchMarkRead(archActionIds()); });
+$("arch-unread").addEventListener("click", () => { closeAllMenus(); doArchMarkUnread(archActionIds()); });
+$("arch-clear-menu").addEventListener("click", () => { closeAllMenus(); clearArchiveSelection(); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeAllMenus(); });
 $("label-cancel").addEventListener("click", () => $("label-modal").classList.add("hidden"));
 $("label-apply").addEventListener("click", applyLabel);
 $("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
 $("smart-confirm").addEventListener("click", onSmartConfirm);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || isModalOpen()) return;
-  if (!$("ab-menu").classList.contains("hidden")) { closeMoreMenu(); return; }
+  const menuOpen = !$("ab-menu").classList.contains("hidden") || !$("arch-menu").classList.contains("hidden");
+  if (menuOpen) { closeAllMenus(); return; }
   if (currentTab === "archive" && archiveSelectedIds.size) clearArchiveSelection();
   else if (selectedIds.size) clearSelection();
 });

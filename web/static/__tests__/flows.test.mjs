@@ -146,6 +146,24 @@ test("restore-to-inbox from a folder calls the archive restore API", async () =>
   assert.deepEqual(app.callsTo("POST", "/api/archive/restore")[0].body.message_ids, ["a1"]);
 });
 
+test("archive folder: Restore is primary; secondary actions live in More", async () => {
+  const app = makeApp({ routes: {
+    "GET /api/archive/folders": { folders: [folder("L1", "Finance", 1, 1)] },
+    "GET /api/archive/emails": { label_id: "L1", emails: [cand("a1")], next_page_token: null },
+    "POST /api/mailbox/mark-read": { action: "mark_read", requested: 1, modified: 1, failed: 0, failures: [] },
+  } });
+  await app.window.loadFolders();
+  click(app.window, app.document.querySelector("#folder-grid .folder-card"));
+  await waitFor(() => rows(app.document, "#arch-email-list").length === 1);
+  selectRow(app.window, app.document.querySelector('#arch-email-list .email-item[data-id="a1"]'));
+  assert.ok($(app.document, "arch-restore"));                       // primary stays direct
+  assert.ok($(app.document, "arch-menu").classList.contains("hidden"));
+  click(app.window, $(app.document, "arch-more-btn"));
+  assert.ok(!$(app.document, "arch-menu").classList.contains("hidden"));
+  click(app.window, $(app.document, "arch-read"));                 // Mark read via menu
+  await waitFor(() => app.callsTo("POST", "/api/mailbox/mark-read").length === 1);
+});
+
 // --- Network error handling -------------------------------------------------
 test("inbox load surfaces a network error", async () => {
   const app = makeApp({ routes: { "GET /api/emails": { __status: 502, body: { detail: "Gmail unreachable" } } } });

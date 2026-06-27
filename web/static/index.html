@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=17" />
+  <link rel="stylesheet" href="/static/style.css?v=18" />
 </head>
 <body>
   <header class="topbar">
@@ -60,19 +60,16 @@
   <main id="view-mail" class="layout">
     <section id="inbox-pane" class="list-pane">
       <div class="bulk">
-        <div class="bulk-head">Bulk draft creation</div>
-        <p class="muted bulk-hint">Creates Gmail drafts for the last <i>N</i> replyable
-          emails (independent of the selection). Non-replyable emails are skipped.</p>
-        <div class="bulk-counts">
-          <span class="muted">Last emails:</span>
-          <button class="chip" data-count="10">10</button>
-          <button class="chip active" data-count="20">20</button>
-          <button class="chip" data-count="50">50</button>
-          <button class="chip" data-count="100">100</button>
-        </div>
-        <div class="bulk-actions">
-          <button id="bulk-gensave" class="btn small primary">Generate + Save drafts</button>
-          <button id="bulk-gensave-all" class="btn small ghost">Generate + Save all replyable</button>
+        <div class="bulk-bar">
+          <span class="bulk-label" title="Creates Gmail drafts for the last N replyable emails (independent of the selection). Non-replyable emails are skipped."><span aria-hidden="true">⚡</span> Bulk drafts</span>
+          <div class="bulk-counts">
+            <button class="chip" data-count="10">10</button>
+            <button class="chip active" data-count="20">20</button>
+            <button class="chip" data-count="50">50</button>
+            <button class="chip" data-count="100">100</button>
+          </div>
+          <button id="bulk-gensave" class="btn small primary">Generate + Save</button>
+          <button id="bulk-gensave-all" class="btn small ghost">All replyable</button>
         </div>
         <div id="bulk-progress" class="bulk-progress hidden">
           <div class="muted" id="bp-text">Processing 0 / 0</div>
@@ -178,15 +175,21 @@
 
         <div id="arch-action-bar" class="action-bar hidden">
           <span class="ab-count"><b id="arch-ab-n">0</b> selected</span>
-          <div class="ab-actions">
-            <button id="arch-restore" class="btn small primary">↩ Restore to Inbox</button>
-            <button id="arch-generate" class="btn small">Generate Draft</button>
-            <button id="arch-smart" class="btn small ai">✨ Smart Archive</button>
-            <button id="arch-read" class="btn small">Mark Read</button>
-            <button id="arch-unread" class="btn small">Mark Unread</button>
+          <button id="arch-restore" class="btn small primary">↩ Restore to Inbox</button>
+          <button id="arch-smart" class="btn small ai">✨ Smart Archive</button>
+          <div class="menu-wrap">
+            <button id="arch-more-btn" class="btn small" aria-haspopup="true" aria-expanded="false">More <span class="caret" aria-hidden="true">▾</span></button>
+            <div id="arch-menu" class="menu hidden" role="menu">
+              <button class="menu-item" id="arch-generate" role="menuitem"><span class="mi-ico" aria-hidden="true">✍️</span> Generate Draft</button>
+              <div class="menu-sep"></div>
+              <button class="menu-item" id="arch-read" role="menuitem"><span class="mi-ico" aria-hidden="true">✓</span> Mark as read</button>
+              <button class="menu-item" id="arch-unread" role="menuitem"><span class="mi-ico" aria-hidden="true">◌</span> Mark as unread</button>
+              <div class="menu-sep"></div>
+              <button class="menu-item" id="arch-clear-menu" role="menuitem"><span class="mi-ico" aria-hidden="true">✕</span> Clear selection</button>
+            </div>
           </div>
           <span id="arch-ab-status" class="ab-status muted"></span>
-          <button id="arch-clear" class="btn small ghost">Clear</button>
+          <button id="arch-clear" class="btn ghost icon small" title="Clear selection" aria-label="Clear selection">✕</button>
         </div>
 
         <ul id="arch-email-list" class="email-list"></ul>
@@ -609,6 +612,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=21"></script>
+  <script src="/static/app.js?v=22"></script>
 </body>
 </html>
