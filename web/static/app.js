@@ -694,7 +694,7 @@ const CATEGORY_OPTIONS = [
 function refsFor(ids) {
   return ids.map((id) => {
     const em = findEmailById(id);
-    return { id, sender: em ? em.sender_email || "" : "" };
+    return { id, sender: em ? em.sender_email || "" : "", subject: em ? em.subject || "" : "" };
   });
 }
 function confClass(conf) {
@@ -822,7 +822,8 @@ async function confirmSmartArchive() {
       for (const mid of item.message_ids || []) {
         const em = findEmailById(mid);
         const sender = em ? em.sender_email || "" : "";
-        refs.push(overridden ? { id: mid, sender, override: chosen } : { id: mid, sender });
+        const subject = em ? em.subject || "" : "";
+        refs.push(overridden ? { id: mid, sender, subject, override: chosen } : { id: mid, sender, subject });
       }
     }
     const r = await api("/api/smart-archive/execute", {
@@ -1909,11 +1910,68 @@ async function loadConfigInto() {
     $("w-personal").value = w.personal_sender;
     $("w-newsletter").value = w.contains_newsletter;
     $("w-noreply").value = w.noreply_sender;
+    renderOrgRules(c.organization_rules || []);
   } catch (e) { toast("Failed to load config: " + e.message, "error"); }
+}
+
+// --- AI Organization rules (Settings) ---------------------------------------
+function orgRowHtml(r) {
+  const sel = (v) => (r.match === v ? " selected" : "");
+  return `<div class="org-row">
+      <select class="org-match">
+        <option value="domain"${sel("domain")}>from domain</option>
+        <option value="sender"${sel("sender")}>from sender</option>
+        <option value="subject"${sel("subject")}>subject contains</option>
+      </select>
+      <input class="org-value" value="${escapeHtml(r.value || "")}" placeholder="${r.match === "subject" ? "invoice, facture" : "google.com"}" />
+      <span class="org-arrow" aria-hidden="true">→</span>
+      <input class="org-label" value="${escapeHtml(r.label || "")}" placeholder="Folder" />
+      <button class="btn ghost icon small org-remove" title="Remove" aria-label="Remove">✕</button>
+    </div>`;
+}
+function currentOrgRows() {
+  return [...document.querySelectorAll("#org-rules .org-row")].map((row) => ({
+    match: row.querySelector(".org-match").value,
+    value: row.querySelector(".org-value").value,
+    label: row.querySelector(".org-label").value,
+  }));
+}
+function renderOrgRules(rules) {
+  const box = $("org-rules");
+  if (!box) return;
+  rules = rules || [];
+  box.innerHTML = rules.map(orgRowHtml).join("");
+  $("org-empty").classList.toggle("hidden", rules.length > 0);
+  box.querySelectorAll(".org-remove").forEach((b, i) =>
+    b.addEventListener("click", () => {
+      const rows = currentOrgRows();
+      rows.splice(i, 1);
+      renderOrgRules(rows);
+    }));
+}
+function orgAdd(rule) {
+  renderOrgRules([...currentOrgRows(), rule || { match: "domain", value: "", label: "" }]);
+}
+function readOrgRules() {
+  return currentOrgRows()
+    .map((r) => ({ match: r.match, value: (r.value || "").trim(), label: (r.label || "").trim() }))
+    .filter((r) => r.value && r.label);
+}
+async function saveOrg() {
+  $("org-status").textContent = "Saving…";
+  try {
+    await saveConfig(true);
+    $("org-status").textContent = "Saved.";
+    toast("Organization preferences saved.");
+  } catch (e) {
+    $("org-status").textContent = "Error: " + e.message;
+    toast("Save failed: " + e.message, "error");
+  }
 }
 
 function buildConfigPayload() {
   return {
+    organization_rules: readOrgRules(),
     custom_prompt: $("c-prompt").value,
     signature: $("c-signature").value,
     default_language: $("c-language").value,
@@ -2195,6 +2253,11 @@ $("s-temp").addEventListener("input", () => { $("s-temp-val").textContent = $("s
 $("ai-save").addEventListener("click", saveAiSettings);
 $("filter-save").addEventListener("click", saveFiltering);
 $("budget-save").addEventListener("click", saveBudget);
+// AI Organization rules
+$("org-add").addEventListener("click", () => orgAdd());
+document.querySelectorAll(".org-preset").forEach((b) =>
+  b.addEventListener("click", () => orgAdd({ match: b.dataset.match, value: b.dataset.value, label: b.dataset.label })));
+$("org-save").addEventListener("click", saveOrg);
 $("goto-usage").addEventListener("click", (e) => {
   e.preventDefault();
   $("settings-modal").classList.add("hidden");

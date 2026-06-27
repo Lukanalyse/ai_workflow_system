@@ -51,12 +51,49 @@ DEFAULT_RULES: list[FilingRule] = [
 
 @dataclass(slots=True)
 class EmailRef:
-    """Reference the engine needs: id (cache + Gmail ops), sender (rules), and
-    an optional user ``override`` label (an explicit suggestion correction)."""
+    """Reference the engine needs: id (cache + Gmail ops), sender (rules),
+    an optional user ``override`` label, and subject (organization rules).
+
+    ``override`` stays the 3rd positional for back-compat; ``subject`` is last.
+    """
 
     id: str
     sender: str = ""
     override: str = ""
+    subject: str = ""
+
+
+class OrganizationRules:
+    """User filing preferences (Settings → AI Organization). First-match-wins.
+
+    Matches a sender substring, an exact/parent domain, or a subject keyword
+    (comma-separated). The highest-priority filing source after an explicit
+    override — the user's own preference beats the built-in rules and the AI.
+    """
+
+    def __init__(self, rules) -> None:
+        # rules: iterable of (match, value, label)
+        self._rules: list[tuple[str, str, str]] = []
+        for match, value, label in rules or []:
+            value = (value or "").strip().lower()
+            label = (label or "").strip()
+            if value and label:
+                self._rules.append(((match or "domain").strip().lower(), value, label))
+
+    def match(self, sender: str, subject: str = "") -> str | None:
+        s = (sender or "").strip().lower()
+        domain = s.split("@")[-1] if "@" in s else s
+        subj = (subject or "").lower()
+        for match, value, label in self._rules:
+            if match == "sender" and value in s:
+                return label
+            if match == "domain" and (domain == value or domain.endswith("." + value)):
+                return label
+            if match == "subject":
+                terms = [t.strip() for t in value.split(",") if t.strip()]
+                if any(t in subj for t in terms):
+                    return label
+        return None
 
 
 @dataclass(slots=True)
@@ -96,10 +133,11 @@ class FilingResolver:
     the cache. Undecided emails are returned so the caller can choose to analyze.
     """
 
-    def __init__(self, *, rules: RulesEngine, analysis_cache, learning=None) -> None:
+    def __init__(self, *, rules: RulesEngine, analysis_cache, learning=None, organization=None) -> None:
         self._rules = rules
         self._cache = analysis_cache
         self._learning = learning  # optional LearningStore (6B)
+        self._org = organization   # optional OrganizationRules (user preferences)
 
     def decide_many(self, refs: list[EmailRef]) -> tuple[dict[str, FilingDecision], list[str]]:
         decisions: dict[str, FilingDecision] = {}
@@ -114,6 +152,15 @@ class FilingResolver:
                     label=ref.override.strip(), confidence=1.0, source="manual"
                 )
                 continue
+            # User filing preferences (AI Organization) — the explicit user
+            # intent, so it wins over the built-in rules / learning / AI.
+            if self._org is not None:
+                org_label = self._org.match(ref.sender, ref.subject)
+                if org_label:
+                    decisions[ref.id] = FilingDecision(
+                        label=org_label, confidence=1.0, source="organization"
+                    )
+                    continue
             rule = self._rules.match(ref.sender)
             if rule is not None:
                 decisions[ref.id] = FilingDecision(label=rule.label, confidence=1.0, source="rule")

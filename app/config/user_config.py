@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 # Allowed dropdown values (validated leniently; UI offers the canonical set).
 LANGUAGES = {"auto", "fr", "en"}
 TONES = {"professional", "friendly", "formal", "concise", "detailed"}
+ORG_MATCH_TYPES = {"sender", "domain", "subject"}
 
 
 class ReplyabilityWeights(BaseModel):
@@ -22,6 +23,18 @@ class ReplyabilityWeights(BaseModel):
     personal_sender: int = 20
     contains_newsletter: int = -50
     noreply_sender: int = -100
+
+
+class OrgRule(BaseModel):
+    """One Smart-Archive filing preference (Settings → AI Organization).
+
+    "When an email matches ``value`` (by sender / domain / subject keyword),
+    file it into ``label``." Consulted before the built-in rules and the AI.
+    """
+
+    match: str = "domain"  # sender | domain | subject
+    value: str = ""
+    label: str = ""
 
 
 class UserConfig(BaseModel):
@@ -46,6 +59,9 @@ class UserConfig(BaseModel):
     replyability_threshold: int = 50
     replyability_weights: ReplyabilityWeights = Field(default_factory=ReplyabilityWeights)
 
+    # --- Smart Archive / AI Organization -------------------------------------
+    organization_rules: list[OrgRule] = Field(default_factory=list)
+
     # --- Inbox UI ------------------------------------------------------------
     show_only_replyable: bool = True
 
@@ -59,7 +75,23 @@ class UserConfig(BaseModel):
         self.allowed_senders = _clean_list(self.allowed_senders)
         self.ignore_keywords = _clean_list(self.ignore_keywords)
         self.replyability_threshold = int(self.replyability_threshold)
+        self.organization_rules = _clean_org_rules(self.organization_rules)
         return self
+
+
+def _clean_org_rules(rules: list[OrgRule]) -> list[OrgRule]:
+    out: list[OrgRule] = []
+    for r in rules or []:
+        if isinstance(r, dict):
+            r = OrgRule(**r)
+        match = (r.match or "domain").strip().lower()
+        if match not in ORG_MATCH_TYPES:
+            match = "domain"
+        value = (r.value or "").strip().lower()  # matching is case-insensitive
+        label = (r.label or "").strip()
+        if value and label:
+            out.append(OrgRule(match=match, value=value, label=label))
+    return out
 
 
 def _clean_list(values: list[str]) -> list[str]:

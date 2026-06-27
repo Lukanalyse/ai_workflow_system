@@ -211,6 +211,22 @@ test("archive folder: Restore is primary; secondary actions live in More", async
   await waitFor(() => app.callsTo("POST", "/api/mailbox/mark-read").length === 1);
 });
 
+test("AI Organization: quick-add a rule and save posts organization_rules", async () => {
+  const app = makeApp({ routes: {
+    "GET /api/config": { organization_rules: [], replyability_weights: {} },
+    "POST /api/config": ({ body }) => body,
+  } });
+  await app.window.loadConfigInto();
+  assert.ok(!$(app.document, "org-empty").classList.contains("hidden")); // empty state first
+  const preset = [...app.document.querySelectorAll(".org-preset")].find((b) => b.dataset.label === "Development");
+  click(app.window, preset);
+  assert.equal(app.document.querySelectorAll("#org-rules .org-row").length, 1);
+  click(app.window, $(app.document, "org-save"));
+  await waitFor(() => app.callsTo("POST", "/api/config").length === 1);
+  const body = app.callsTo("POST", "/api/config")[0].body;
+  assert.deepEqual(body.organization_rules[0], { match: "domain", value: "github.com", label: "Development" });
+});
+
 // --- Network error handling -------------------------------------------------
 test("inbox load surfaces a network error", async () => {
   const app = makeApp({ routes: { "GET /api/emails": { __status: 502, body: { detail: "Gmail unreachable" } } } });

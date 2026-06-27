@@ -38,7 +38,12 @@ from app.services.cost_service import CostService
 from app.services.draft_service import DraftService
 from app.services.email_analysis_service import EmailAnalysisService, SQLiteAnalysisCache
 from app.services.email_service import EmailService
-from app.services.filing_engine import EmailRef, FilingResolver, RulesEngine
+from app.services.filing_engine import (
+    EmailRef,
+    FilingResolver,
+    OrganizationRules,
+    RulesEngine,
+)
 from app.services.learning_engine import LearningStore
 from app.services.llm_service import LLMService
 from app.services.mailbox_service import MailboxService
@@ -146,11 +151,15 @@ class ServiceContainer:
                 cache=SQLiteAnalysisCache(self.sqlite),
             )
             learning = LearningStore(self.sqlite)
+            org_rules = OrganizationRules(
+                (r.match, r.value, r.label) for r in self.user_config.organization_rules
+            )
             self.smart_archive_service = SmartArchiveService(
                 resolver=FilingResolver(
                     rules=RulesEngine(),
                     analysis_cache=self.analysis_service,
                     learning=learning,
+                    organization=org_rules,
                 ),
                 mailbox=self.mailbox_service,
                 learning=learning,
@@ -253,6 +262,8 @@ class CreateLabelRequest(BaseModel):
 class EmailRefIn(BaseModel):
     id: str
     sender: str = ""
+    subject: str = ""
+    override: str = ""
 
 
 class SmartArchiveRequest(BaseModel):
@@ -671,7 +682,10 @@ def mailbox_label(body: LabelActionRequest) -> dict:
 
 
 def _to_refs(body: SmartArchiveRequest) -> list[EmailRef]:
-    return [EmailRef(id=e.id, sender=e.sender) for e in body.emails]
+    return [
+        EmailRef(id=e.id, sender=e.sender, subject=e.subject, override=e.override)
+        for e in body.emails
+    ]
 
 
 @app.post("/api/smart-archive/preview")

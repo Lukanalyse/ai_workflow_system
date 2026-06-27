@@ -834,3 +834,20 @@ textarea {
 .attach-body { padding: 14px; overflow: auto; display: flex; align-items: center; justify-content: center; background: var(--panel-2); min-height: 200px; }
 .att-preview-img { max-width: 100%; max-height: 76vh; border-radius: var(--r-control); box-shadow: var(--shadow-sm); }
 .att-preview-frame { width: 100%; height: 76vh; border: none; border-radius: var(--r-control); background: #fff; }
+
+/* ===================== AI Organization rules (Settings) ===================== */
+.org-cols { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); font-weight: 600; padding: 4px 2px 2px; }
+.org-cols span:nth-child(2) { width: 18px; }
+.org-rules { display: flex; flex-direction: column; gap: 8px; }
+.org-row { display: grid; grid-template-columns: 150px 1fr auto 1fr auto; gap: 8px; align-items: center; }
+.org-row .org-match, .org-row .org-value, .org-row .org-label {
+  height: var(--h-sm); padding: 0 8px; border: 1px solid var(--border);
+  border-radius: var(--r-control); font-size: 13px; background: var(--panel); color: var(--text);
+}
+.org-row .org-arrow { color: var(--muted); text-align: center; }
+.org-add-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+@media (max-width: 560px) {
+  .org-row { grid-template-columns: 1fr auto 1fr; }
+  .org-row .org-match { grid-column: 1 / -1; }
+  .org-cols { display: none; }
+}

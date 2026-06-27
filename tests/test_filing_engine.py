@@ -8,8 +8,56 @@ from app.services.filing_engine import (
     EmailRef,
     FilingRule,
     FilingResolver,
+    OrganizationRules,
     RulesEngine,
 )
+
+
+# --- AI Organization (user filing preferences) -------------------------------
+def test_org_rules_match_sender_domain_subject():
+    org = OrganizationRules([
+        ("domain", "google.com", "Google"),
+        ("sender", "amazon", "Shopping"),
+        ("subject", "invoice, facture", "Finance"),
+    ])
+    assert org.match("noreply@accounts.google.com") == "Google"   # parent domain
+    assert org.match("x@google.com") == "Google"                  # exact domain
+    assert org.match("ship@amazon.fr") == "Shopping"              # sender substring
+    assert org.match("a@b.com", "Your invoice is ready") == "Finance"
+    assert org.match("a@b.com", "Votre facture") == "Finance"
+    assert org.match("a@b.com", "hello") is None
+
+
+def test_org_domain_does_not_loosely_match():
+    org = OrganizationRules([("domain", "google.com", "Google")])
+    assert org.match("x@notgoogle.com.evil.test") is None  # not a parent domain
+
+
+def test_resolver_organization_beats_rules_and_ai():
+    rules = RulesEngine([FilingRule("*@github.com", "Development")])
+    cache = _Cache({"c": _an("Work", 0.9)})
+    org = OrganizationRules([
+        ("domain", "github.com", "Code"),     # overrides the built-in Development
+        ("subject", "invoice", "Finance"),
+    ])
+    resolver = FilingResolver(rules=rules, analysis_cache=cache, organization=org)
+    refs = [
+        EmailRef("a", "noreply@github.com"),                 # org domain beats rule
+        EmailRef("b", "x@unknown.io", subject="Your invoice"),  # org subject
+        EmailRef("c", "boss@corp.com"),                      # falls through to AI cache
+    ]
+    decisions, undecided = resolver.decide_many(refs)
+    assert decisions["a"].source == "organization" and decisions["a"].label == "Code"
+    assert decisions["b"].source == "organization" and decisions["b"].label == "Finance"
+    assert decisions["c"].source == "ai" and decisions["c"].label == "Work"
+    assert undecided == []
+
+
+def test_override_still_beats_organization():
+    org = OrganizationRules([("domain", "github.com", "Code")])
+    resolver = FilingResolver(rules=RulesEngine([]), analysis_cache=_Cache({}), organization=org)
+    decisions, _ = resolver.decide_many([EmailRef("a", "x@github.com", override="Pinned")])
+    assert decisions["a"].source == "manual" and decisions["a"].label == "Pinned"
 
 
 def test_rule_glob_matches_domain_variants():

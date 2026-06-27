@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=20" />
+  <link rel="stylesheet" href="/static/style.css?v=21" />
 </head>
 <body>
   <header class="topbar">
@@ -333,6 +333,7 @@
       <div class="settings-body">
         <nav class="settings-nav">
           <button class="set-tab active" data-pane="ai">AI</button>
+          <button class="set-tab" data-pane="organization">✨ Organization</button>
           <button class="set-tab" data-pane="filtering">Filtering</button>
           <button class="set-tab" data-pane="gmail">Gmail</button>
           <button class="set-tab" data-pane="usage">Usage</button>
@@ -389,6 +390,30 @@ AI Engineer"></textarea>
             <div class="controls">
               <button id="ai-save" class="btn primary">Save</button>
               <span id="ai-status" class="muted"></span>
+            </div>
+          </section>
+
+          <!-- ---------- AI Organization ---------- -->
+          <section id="pane-organization" class="set-pane hidden">
+            <h3 class="section">✨ AI Organization</h3>
+            <p class="muted">Tell Smart Archive where things go. The AI follows your
+              preferences first, then falls back to its own judgement.</p>
+            <div class="org-cols">
+              <span>When an email…</span><span></span><span>File it into</span>
+            </div>
+            <div id="org-rules" class="org-rules"></div>
+            <p id="org-empty" class="muted">No preferences yet — add one below.</p>
+            <div class="org-add-row">
+              <button id="org-add" class="btn small">+ Add rule</button>
+              <span class="muted">Quick add:</span>
+              <button class="btn small ghost org-preset" data-match="domain" data-value="google.com" data-label="Google">Google</button>
+              <button class="btn small ghost org-preset" data-match="domain" data-value="github.com" data-label="Development">GitHub</button>
+              <button class="btn small ghost org-preset" data-match="domain" data-value="amazon.com" data-label="Shopping">Amazon</button>
+              <button class="btn small ghost org-preset" data-match="subject" data-value="invoice, facture" data-label="Finance">Invoices</button>
+            </div>
+            <div class="controls">
+              <button id="org-save" class="btn primary">Save</button>
+              <span id="org-status" class="muted"></span>
             </div>
           </section>
 
@@ -637,6 +662,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=24"></script>
+  <script src="/static/app.js?v=25"></script>
 </body>
 </html>
