@@ -38,3 +38,4 @@ data/
 # IDE
 .idea/
 .vscode/
+node_modules

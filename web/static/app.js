@@ -2122,8 +2122,11 @@ function startHealthPolling() {
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshHealth(); });
 
-// Boot
-refreshHealth();
-loadConfig();
-maybeStartWizard();
-startHealthPolling();
+// Boot. Skipped under the test harness (window.__APP_TEST__) so specs can wire
+// fetch stubs and drive flows deterministically without the auto-boot firing.
+if (!window.__APP_TEST__) {
+  refreshHealth();
+  loadConfig();
+  maybeStartWizard();
+  startHealthPolling();
+}
