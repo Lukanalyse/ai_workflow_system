@@ -200,6 +200,21 @@ class GmailProvider(EmailProvider):
         assert self._actions is not None
         return self._actions.list_labels()
 
+    def label_counts(self, label_id: str) -> tuple[int, int]:
+        self._ensure_service()
+        assert self._reader is not None
+        return self._reader.get_label_counts(label_id)
+
+    def list_label_messages(
+        self, label_id: str, *, page_size: int = 25, page_token: str | None = None
+    ) -> tuple[list[EmailMessage], str | None]:
+        self._ensure_service()
+        assert self._reader is not None
+        messages, next_token = self._reader.list_by_label(
+            label_id, page_size=page_size, page_token=page_token
+        )
+        return [_to_email_message(m) for m in messages], next_token
+
     def create_label(self, name: str):
         self._require_modify_scope()
         self._ensure_service()

@@ -107,6 +107,16 @@ class EmailProvider(ABC):
         """Return the mailbox's user labels."""
         raise NotImplementedError("This provider does not support listing labels.")
 
+    def label_counts(self, label_id: str) -> tuple[int, int]:
+        """Return (total, unread) message counts for a label."""
+        raise NotImplementedError("This provider does not support label counts.")
+
+    def list_label_messages(
+        self, label_id: str, *, page_size: int = 25, page_token: str | None = None
+    ) -> tuple[list[EmailMessage], str | None]:
+        """Return one page of messages carrying ``label_id`` plus the next page token."""
+        raise NotImplementedError("This provider does not support listing label messages.")
+
     def create_label(self, name: str):
         """Create a label and return it."""
         raise NotImplementedError("This provider does not support creating labels.")

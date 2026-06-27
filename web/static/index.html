@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=11" />
+  <link rel="stylesheet" href="/static/style.css?v=12" />
 </head>
 <body>
   <header class="topbar">
@@ -22,6 +22,7 @@
 
   <nav class="tabs">
     <button id="tab-inbox" class="tab active">Inbox</button>
+    <button id="tab-archive" class="tab">Archive</button>
     <button id="tab-usage" class="tab">Usage</button>
   </nav>
 
@@ -56,8 +57,8 @@
     <span id="ob-status" class="muted"></span>
   </section>
 
-  <main id="view-inbox" class="layout">
-    <section class="list-pane">
+  <main id="view-mail" class="layout">
+    <section id="inbox-pane" class="list-pane">
       <div class="bulk">
         <div class="bulk-head">Bulk draft creation</div>
         <p class="muted bulk-hint">Creates Gmail drafts for the last <i>N</i> replyable
@@ -129,6 +130,65 @@
 
       <ul id="email-list" class="email-list"></ul>
       <p id="list-empty" class="muted">Click “Load emails” to fetch your unread inbox.</p>
+    </section>
+
+    <!-- ===================== Archive workspace (Phase 7) ===================== -->
+    <section id="archive-pane" class="list-pane hidden">
+      <!-- Folder list (default state) -->
+      <div id="archive-home">
+        <div class="archive-head">
+          <div>
+            <h2 class="archive-title">Archive</h2>
+            <p class="muted archive-sub">Your filed emails, organised by label.</p>
+          </div>
+          <button id="arch-refresh" class="btn small ghost">↻ Refresh</button>
+        </div>
+        <div id="folder-grid" class="folder-grid"></div>
+        <p id="folder-empty" class="muted">Loading folders…</p>
+      </div>
+
+      <!-- Open folder (email list) -->
+      <div id="archive-folder" class="hidden">
+        <div class="folder-bar">
+          <button id="arch-back" class="btn small ghost">← Folders</button>
+          <span class="folder-title">
+            <span class="folder-dot" id="af-dot"></span>
+            <b id="af-name"></b>
+          </span>
+          <span id="af-count" class="muted"></span>
+        </div>
+
+        <div class="inbox-toolbar">
+          <div class="search-wrap">
+            <span class="search-ico">🔍</span>
+            <input id="arch-search" type="search" placeholder="Search this folder…" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="list-head">
+          <label class="select-all"><input id="arch-select-all" type="checkbox" /> <span class="sa-label">Select all</span></label>
+          <span id="arch-result-count" class="muted"></span>
+        </div>
+
+        <div id="arch-action-bar" class="action-bar hidden">
+          <span class="ab-count"><b id="arch-ab-n">0</b> selected</span>
+          <div class="ab-actions">
+            <button id="arch-restore" class="btn small primary">↩ Restore to Inbox</button>
+            <button id="arch-generate" class="btn small">Generate Draft</button>
+            <button id="arch-smart" class="btn small ai">✨ Smart Archive</button>
+            <button id="arch-read" class="btn small">Mark Read</button>
+            <button id="arch-unread" class="btn small">Mark Unread</button>
+          </div>
+          <span id="arch-ab-status" class="ab-status muted"></span>
+          <button id="arch-clear" class="btn small ghost">Clear</button>
+        </div>
+
+        <ul id="arch-email-list" class="email-list"></ul>
+        <p id="arch-empty" class="muted"></p>
+        <div id="arch-more" class="arch-more hidden">
+          <button id="arch-load-more" class="btn small ghost">Load more</button>
+        </div>
+      </div>
     </section>
 
     <section class="detail-pane">
@@ -543,6 +603,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

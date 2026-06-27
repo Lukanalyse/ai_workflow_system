@@ -59,14 +59,37 @@ class EmailService:
             status=status if status in {"unread", "read", "all"} else "unread",
         )
         messages = self._provider.list_messages(config)
+        candidates = self._build_candidates(messages)
+        logger.info("Listed %d email candidates", len(candidates))
+        return candidates
 
-        # Resolve "already processed" and "known sender" for the whole batch in
-        # two queries each, rather than three SQLite round-trips per email.
+    def list_label_candidates(
+        self, label_id: str, *, page_token: str | None = None, page_size: int = 25
+    ) -> tuple[list[EmailCandidate], str | None]:
+        """One page of a label's emails as candidates, plus the next page token.
+
+        Reuses the exact same enrichment (replyability, seen-state, cached AI
+        analysis) as the inbox feed, so the Archive workspace renders identically.
+        Never loads a whole label: only ``page_size`` messages are fetched.
+        """
+        size = max(1, min(int(page_size), LIST_MAX_RESULTS))
+        messages, next_token = self._provider.list_label_messages(
+            label_id, page_size=size, page_token=page_token
+        )
+        return self._build_candidates(messages), next_token
+
+    def _build_candidates(self, messages: list[EmailMessage]) -> list[EmailCandidate]:
+        """Enrich provider messages into list-ready candidates (no LLM calls).
+
+        Resolves "already processed", "known sender" and any cached AI analysis
+        for the whole batch in a couple of bulk queries rather than per email.
+        """
+        if not messages:
+            return []
         seen_messages, draft_threads = self._sqlite.seen_status_bulk(
             [m.id for m in messages], [m.thread_id for m in messages]
         )
         known_senders = self._sqlite.known_senders([m.sender_email for m in messages])
-        # Attach any cached AI analysis (read-only; no LLM call) in one query.
         analyses = self._sqlite.get_email_analysis_many([m.id for m in messages])
 
         candidates: list[EmailCandidate] = []
@@ -99,7 +122,6 @@ class EmailService:
                     ai=analyses.get(msg.id),
                 )
             )
-        logger.info("Listed %d email candidates", len(candidates))
         return candidates
 
     def get_message(self, message_id: str) -> EmailMessage:

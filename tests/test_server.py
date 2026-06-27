@@ -168,6 +168,102 @@ def test_mailbox_missing_scope_returns_403(client, restore_container):
     assert "reconnect" in r.json()["detail"].lower()
 
 
+# --- Archive workspace endpoints (Phase 7) -----------------------------------
+def test_archive_folders_ok(client, restore_container):
+    from app.services.archive_service import ArchiveFolder
+
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def list_folders(self):
+            return [ArchiveFolder(id="L_fin", name="Finance", total=24, unread=5)]
+
+    c.archive_service = _Svc()
+    r = client.get("/api/archive/folders")
+    assert r.status_code == 200
+    assert r.json() == {
+        "folders": [{"id": "L_fin", "name": "Finance", "total": 24, "unread": 5, "read": 19}]
+    }
+
+
+def test_archive_emails_passes_token_and_serializes(client, restore_container):
+    from app.services.email_service import EmailCandidate
+
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+    captured = {}
+
+    cand = EmailCandidate(
+        id="m1", thread_id="t1", subject="Invoice", sender_email="a@b.com", sender_name="A",
+        received_at="2026-06-01T00:00:00+00:00", snippet="hi", is_unread=False, label_ids=["L_fin"],
+        has_attachments=False, attachments=[], replyable=False, reply_reason="", already_processed=True,
+        score=0, classification="", reasons=[], ai=None,
+    )
+
+    class _Svc:
+        def list_emails(self, label_id, *, page_token=None, page_size=25):
+            captured.update(label_id=label_id, page_token=page_token, page_size=page_size)
+            return {"label_id": label_id, "emails": [cand], "next_page_token": "TOK2"}
+
+    c.archive_service = _Svc()
+    r = client.get("/api/archive/emails?label_id=L_fin&page_token=TOK1&page_size=10")
+    assert r.status_code == 200
+    body = r.json()
+    assert captured == {"label_id": "L_fin", "page_token": "TOK1", "page_size": 10}
+    assert body["label_id"] == "L_fin" and body["next_page_token"] == "TOK2"
+    assert body["emails"][0]["id"] == "m1" and body["emails"][0]["subject"] == "Invoice"
+
+
+def test_archive_emails_missing_label_id_is_422(client, restore_container):
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+    c.archive_service = object()  # never reached: label_id is a required query param
+    r = client.get("/api/archive/emails")
+    assert r.status_code == 422
+
+
+def test_archive_restore_ok(client, restore_container):
+    from app.services.mailbox_service import ActionResult
+
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def restore_to_inbox(self, ids):
+            return ActionResult(action="restore", requested=len(ids), modified=len(ids))
+
+    c.archive_service = _Svc()
+    r = client.post("/api/archive/restore", json={"message_ids": ["m1", "m2"]})
+    assert r.status_code == 200
+    assert r.json() == {"action": "restore", "requested": 2, "modified": 2, "failed": 0, "failures": []}
+
+
+def test_archive_restore_missing_scope_returns_403(client, restore_container):
+    c = restore_container
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def restore_to_inbox(self, ids):
+            raise PermissionError("reconnect Gmail to enable archive")
+
+    c.archive_service = _Svc()
+    r = client.post("/api/archive/restore", json={"message_ids": ["m1"]})
+    assert r.status_code == 403
+    assert "reconnect" in r.json()["detail"].lower()
+
+
+def test_archive_folders_fails_closed_when_degraded(client, restore_container):
+    _make_degraded(restore_container)
+    r = client.get("/api/archive/folders")
+    assert r.status_code == 503
+
+
 def test_setup_status_carries_no_secret(client, restore_container):
     c = restore_container
     c.degraded = False

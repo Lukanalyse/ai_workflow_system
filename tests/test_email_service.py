@@ -180,3 +180,90 @@ def test_collect_ids_paginates_to_target() -> None:
     assert r._collect_ids("q", 120) == ids
     # A smaller target stops early without over-fetching.
     assert r._collect_ids("q", 30) == ids[:30]
+
+
+# --- Phase 7: label listing + counts (Archive workspace) ---------------------
+class _LabelMessages:
+    """messages() resource that lists by labelIds (one page) and gets bodies."""
+
+    def __init__(self, by_label, bodies) -> None:
+        self._by_label = by_label   # {label_id: (ids, next_token)} for page_token=None
+        self._bodies = bodies       # {id: minimal Gmail message payload}
+        self.list_args: list[dict] = []
+
+    def list(self, *, userId, labelIds, maxResults, pageToken=None, includeSpamTrash=None):
+        self.list_args.append(
+            {"labelIds": labelIds, "maxResults": maxResults, "pageToken": pageToken,
+             "includeSpamTrash": includeSpamTrash}
+        )
+        ids, next_token = self._by_label.get(labelIds[0], ([], None))
+        payload = {"messages": [{"id": i} for i in ids]}
+        if next_token:
+            payload["nextPageToken"] = next_token
+        return _Exec(payload)
+
+    def get(self, *, userId, id, format):
+        return _Exec(self._bodies[id])
+
+
+class _Labels:
+    def __init__(self, counts) -> None:
+        self._counts = counts  # {label_id: {"messagesTotal": n, "messagesUnread": m}}
+        self.get_calls: list[str] = []
+
+    def get(self, *, userId, id):
+        self.get_calls.append(id)
+        return _Exec(self._counts[id])
+
+
+class _LabelSvc:
+    def __init__(self, messages=None, labels=None) -> None:
+        self._messages = messages
+        self._labels = labels
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self._messages
+
+    def labels(self):
+        return self._labels
+
+
+def _body(mid: str) -> dict:
+    return {
+        "id": mid,
+        "threadId": "t_" + mid,
+        "internalDate": "1700000000000",
+        "snippet": "snippet " + mid,
+        "labelIds": ["L_fin"],
+        "payload": {"headers": [{"name": "From", "value": "Acme <a@acme.com>"},
+                                {"name": "Subject", "value": "Re: " + mid}]},
+    }
+
+
+def test_get_label_counts() -> None:
+    r = GmailReader.__new__(GmailReader)
+    r.user_id = "me"
+    labels = _Labels({"L_fin": {"messagesTotal": 24, "messagesUnread": 5}})
+    r.service = _LabelSvc(labels=labels)
+    assert r.get_label_counts("L_fin") == (24, 5)
+    assert labels.get_calls == ["L_fin"]
+
+
+def test_list_by_label_returns_messages_and_token() -> None:
+    r = GmailReader.__new__(GmailReader)
+    r.user_id = "me"
+    msgs = _LabelMessages(
+        by_label={"L_fin": (["m1", "m2"], "TOK2")},
+        bodies={"m1": _body("m1"), "m2": _body("m2")},
+    )
+    r.service = _LabelSvc(messages=msgs)
+    messages, next_token = r.list_by_label("L_fin", page_size=2)
+    assert [m.id for m in messages] == ["m1", "m2"]
+    assert next_token == "TOK2"
+    # Filtered by labelIds (not a free-text query) and excludes spam/trash.
+    assert msgs.list_args[0]["labelIds"] == ["L_fin"]
+    assert msgs.list_args[0]["includeSpamTrash"] is False
+    assert messages[0].subject == "Re: m1" and messages[0].sender_email == "a@acme.com"

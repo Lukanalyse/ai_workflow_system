@@ -217,6 +217,58 @@ class GmailReader:
                 break
         return ids[:target]
 
+    def get_label_counts(self, label_id: str) -> tuple[int, int]:
+        """Return (total, unread) message counts for a label.
+
+        Uses ``labels.get`` (one cheap call), so the Archive folder list never
+        has to enumerate a label's messages just to show a count.
+        """
+        data = (
+            self.service.users()
+            .labels()
+            .get(userId=self.user_id, id=label_id)
+            .execute()
+        )
+        total = int(data.get("messagesTotal", 0) or 0)
+        unread = int(data.get("messagesUnread", 0) or 0)
+        return total, unread
+
+    def list_by_label(
+        self, label_id: str, *, page_size: int = 25, page_token: str | None = None
+    ) -> tuple[list[GmailMessage], str | None]:
+        """Return one page of messages carrying ``label_id`` plus the next token.
+
+        Filters by ``labelIds`` rather than a free-text query so a label whose
+        name contains spaces or punctuation still resolves exactly. Only the page
+        of ids is listed; bodies are fetched per id (same cost model as the inbox
+        reader), keeping the Archive workspace from ever loading a whole label.
+        """
+        size = max(1, min(int(page_size), _GMAIL_PAGE_SIZE))
+        resp = (
+            self.service.users()
+            .messages()
+            .list(
+                userId=self.user_id,
+                labelIds=[label_id],
+                maxResults=size,
+                pageToken=page_token or None,
+                includeSpamTrash=False,
+            )
+            .execute()
+        )
+        ids = [str(r["id"]) for r in resp.get("messages", [])]
+        next_token = resp.get("nextPageToken")
+        messages: list[GmailMessage] = []
+        for message_id in ids:
+            detail = (
+                self.service.users()
+                .messages()
+                .get(userId=self.user_id, id=message_id, format="full")
+                .execute()
+            )
+            messages.append(self._parse_message(detail))
+        return messages, next_token
+
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:
         target = max(1, min(config.max_emails, LIST_MAX_RESULTS))
         query = self._build_query(config)

@@ -68,6 +68,14 @@ def test_archive_removes_inbox_for_many() -> None:
     assert p.calls[0]["remove"] == ["INBOX"] and p.calls[0]["add"] == []
 
 
+def test_restore_to_inbox_adds_inbox_only() -> None:
+    p = FakeProvider()
+    r = MailboxService(p).restore_to_inbox(["m1", "m2"])
+    assert r.action == "restore" and r.modified == 2
+    # Restore re-adds INBOX and never removes the filing label.
+    assert p.calls[0]["add"] == ["INBOX"] and p.calls[0]["remove"] == []
+
+
 def test_apply_label_with_archive() -> None:
     p = FakeProvider()
     r = MailboxService(p).apply_label(["m1", "m2"], label_id="Label_7", archive=True)

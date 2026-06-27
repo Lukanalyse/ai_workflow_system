@@ -26,6 +26,7 @@ from app.security.fs_validation import (
     issues_to_dicts,
     safe_mkdir,
 )
+from app.services.archive_service import ArchiveService
 from app.services.bulk_service import BULK_MAX, BulkService
 from app.services.cost_service import CostService
 from app.services.draft_service import DraftService
@@ -77,6 +78,7 @@ class ServiceContainer:
         self.mailbox_service: MailboxService | None = None
         self.analysis_service: EmailAnalysisService | None = None
         self.smart_archive_service: SmartArchiveService | None = None
+        self.archive_service: ArchiveService | None = None
         self.reload()
 
     def _teardown(self) -> None:
@@ -84,7 +86,7 @@ class ServiceContainer:
             "settings", "sqlite", "provider", "cost_service", "user_config_store",
             "user_config", "scorer", "llm_service", "email_service",
             "draft_service", "bulk_service", "mailbox_service", "analysis_service",
-            "smart_archive_service",
+            "smart_archive_service", "archive_service",
         ):
             setattr(self, attr, None)
 
@@ -146,6 +148,11 @@ class ServiceContainer:
                 ),
                 mailbox=self.mailbox_service,
                 learning=learning,
+            )
+            self.archive_service = ArchiveService(
+                provider=self.provider,
+                email_service=self.email_service,
+                mailbox_service=self.mailbox_service,
             )
             # Re-validate using the live settings paths (custom locations).
             self.fs_issues = check_critical_paths(settings)
@@ -589,6 +596,42 @@ def filing_history(limit: int = 50) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to read filing history")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# --- Archive workspace (Phase 7) ---------------------------------------------
+@app.get("/api/archive/folders")
+def archive_folders() -> dict:
+    """User labels as folders with total/read/unread counts (no email bodies loaded)."""
+    return _run_mailbox_action(
+        "archive_folders",
+        lambda: {"folders": [f.as_dict() for f in container.archive_service.list_folders()]},
+    )
+
+
+@app.get("/api/archive/emails")
+def archive_emails(label_id: str, page_token: str | None = None, page_size: int = 25) -> dict:
+    """One page of a folder's emails (same shape as the inbox feed) + next page token."""
+
+    def _list():
+        result = container.archive_service.list_emails(
+            label_id, page_token=page_token, page_size=page_size
+        )
+        return {
+            "label_id": result["label_id"],
+            "emails": [asdict(c) for c in result["emails"]],
+            "next_page_token": result["next_page_token"],
+        }
+
+    return _run_mailbox_action("archive_emails", _list)
+
+
+@app.post("/api/archive/restore")
+def archive_restore(body: MailboxActionRequest) -> dict:
+    """Restore selected emails to the inbox (keeps their filing label)."""
+    return _run_mailbox_action(
+        "archive_restore",
+        lambda: container.archive_service.restore_to_inbox(body.message_ids).as_dict(),
+    )
 
 
 @app.get("/api/labels")

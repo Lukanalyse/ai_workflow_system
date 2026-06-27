@@ -22,6 +22,23 @@ let filterNeedsReply = true;   // "Needs reply" chip (client-side; persists as s
 const selectedIds = new Set(); // selected email ids for bulk actions
 let selectionBusy = false;     // a bulk action is running
 
+// --- Archive workspace state (Phase 7) --------------------------------------
+let currentTab = "inbox";        // inbox | archive | usage
+let mailContext = "inbox";       // which list owns the shared detail pane: inbox | archive
+let archiveFolders = [];         // [{id,name,total,read,unread}]
+let archiveFolder = null;        // currently open folder
+let archiveEmails = [];          // loaded emails for the open folder (paged)
+let archiveNextToken = null;     // Gmail nextPageToken for the open folder
+let archiveSearch = "";          // client-side search within the open folder
+let archiveLoading = false;      // a folder page load is in flight
+const archiveSelectedIds = new Set();
+
+// The list a shared helper should act on, based on the active mail context.
+function emailPool() { return mailContext === "archive" ? archiveEmails : lastEmails; }
+function findEmailById(id) {
+  return lastEmails.find((e) => e.id === id) || archiveEmails.find((e) => e.id === id) || null;
+}
+
 async function api(path, options) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -480,10 +497,11 @@ async function analyzeCurrent(force) {
   try {
     const a = await api(`/api/emails/${selected.id}/analyze${force ? "?force=true" : ""}`, { method: "POST" });
     selected.ai = a;
-    const row = lastEmails.find((e) => e.id === selected.id);
+    const row = findEmailById(selected.id);
     if (row) row.ai = a;
     renderAiSection(selected);
-    renderList(); // surface category/priority on the list row
+    // Surface category/priority on the originating list row.
+    if (mailContext === "archive") renderArchiveList(); else renderList();
     toast("Email analyzed.");
   } catch (e) {
     renderAiSection(selected);
@@ -496,6 +514,7 @@ let smartTargetIds = [];
 let smartUnanalyzedIds = []; // emails the backend couldn't decide (need analysis)
 let smartPlanItems = [];     // last preview items (label, count, confidence, message_ids)
 let smartOverrides = {};     // originalLabel -> user-chosen label
+let smartContext = "inbox";  // which view launched Smart Archive (inbox | archive)
 // Label choices offered when the user edits a suggestion.
 const CATEGORY_OPTIONS = [
   "Finance", "Administration", "Work", "Research", "Shopping", "Gaming",
@@ -504,7 +523,7 @@ const CATEGORY_OPTIONS = [
 // id + sender pairs so the backend rules engine can decide without a Gmail fetch.
 function refsFor(ids) {
   return ids.map((id) => {
-    const em = lastEmails.find((e) => e.id === id);
+    const em = findEmailById(id);
     return { id, sender: em ? em.sender_email || "" : "" };
   });
 }
@@ -530,8 +549,9 @@ function smartItemRow(item) {
       <span class="plan-fill"></span><b>${item.count}</b>
     </div>`;
 }
-async function openSmartArchive(ids) {
+async function openSmartArchive(ids, ctx = "inbox") {
   if (!ids.length) return;
+  smartContext = ctx;
   smartTargetIds = ids;
   $("smart-title").textContent = "✨ Smart Archive";
   $("smart-cancel").textContent = "Cancel";
@@ -599,7 +619,7 @@ async function analyzeAndContinue() {
     $("smart-body").innerHTML = `<p class="muted">Analyzing ${done + 1} / ${ids.length}…</p>`;
     try {
       const a = await api(`/api/emails/${id}/analyze`, { method: "POST" });
-      const em = lastEmails.find((e) => e.id === id);
+      const em = findEmailById(id);
       if (em) em.ai = a;
       if (selected && selected.id === id) { selected.ai = a; renderAiSection(selected); }
       done++;
@@ -607,7 +627,8 @@ async function analyzeAndContinue() {
       failed++;
     }
   }
-  renderList(); // newly analyzed rows light up their category/priority
+  // Newly analyzed rows light up their category/priority in whichever list.
+  if (smartContext === "archive") renderArchiveList(); else renderList();
   if (failed) toast(`${failed} email(s) could not be analyzed.`, "warn");
   await reRunPreview(); // re-runs Smart Archive and shows the filing plan
 }
@@ -629,7 +650,7 @@ async function confirmSmartArchive() {
       const chosen = smartOverrides[item.label] || item.label;
       const overridden = chosen !== item.label;
       for (const mid of item.message_ids || []) {
-        const em = lastEmails.find((e) => e.id === mid);
+        const em = findEmailById(mid);
         const sender = em ? em.sender_email || "" : "";
         refs.push(overridden ? { id: mid, sender, override: chosen } : { id: mid, sender });
       }
@@ -638,8 +659,15 @@ async function confirmSmartArchive() {
       method: "POST", body: JSON.stringify({ emails: refs }),
     });
     renderSmartResult(r);
-    clearSelection();
-    loadEmails(); // archived emails drop out of the inbox view
+    if (smartContext === "archive") {
+      // Reclassified emails leave this folder — refresh the open folder + counts.
+      clearArchiveSelection();
+      reloadArchiveFolder();
+      loadFolders();
+    } else {
+      clearSelection();
+      loadEmails(); // archived emails drop out of the inbox view
+    }
     toast(`Smart Archive: ${r.archived} email(s) filed.`, r.failed ? "warn" : "ok");
   } catch (e) {
     $("smart-body").innerHTML = `<p class="warn-box">${escapeHtml(e.message)}</p>`;
@@ -662,42 +690,46 @@ function renderSmartResult(r) {
   $("smart-cancel").textContent = "Done";
 }
 
-// Quick actions for the currently-open email (operate on a single id).
+// Quick actions for the currently-open email (operate on a single id). The set
+// of actions depends on which list the email came from (inbox vs archive).
 function renderDetailActions(em) {
   const el = $("d-actions");
   if (!el) return;
   const readBtn = em.is_unread
     ? `<button class="btn small" data-act="read">Mark read</button>`
     : `<button class="btn small" data-act="unread">Mark unread</button>`;
-  el.innerHTML = readBtn +
-    `<button class="btn small" data-act="archive">Archive</button>` +
-    `<button class="btn small" data-act="label">Label</button>`;
+  const archiveButtons = mailContext === "archive"
+    ? `<button class="btn small primary" data-act="restore">↩ Restore to Inbox</button>`
+    : `<button class="btn small" data-act="archive">Archive</button>` +
+      `<button class="btn small" data-act="label">Label</button>`;
+  el.innerHTML = readBtn + archiveButtons;
   el.querySelectorAll("button").forEach((b) =>
     b.addEventListener("click", () => {
       const ids = [em.id];
       const act = b.dataset.act;
-      if (act === "read") doMarkRead(ids);
-      else if (act === "unread") doMarkUnread(ids);
+      const archived = mailContext === "archive";
+      if (act === "read") archived ? doArchMarkRead(ids) : doMarkRead(ids);
+      else if (act === "unread") archived ? doArchMarkUnread(ids) : doMarkUnread(ids);
       else if (act === "archive") doArchive(ids);
       else if (act === "label") openLabelModal(ids);
+      else if (act === "restore") doRestore(ids);
     }));
 }
 
 // Generate + save Gmail drafts for the selected emails. Reuses the existing
 // per-email endpoints (no new backend), so it is safe and incremental. Phase 5
 // can swap this for a dedicated server-side bulk endpoint.
-async function runSelectionDrafts() {
-  if (selectionBusy) return;
-  const ids = [...selectedIds];
-  if (!ids.length) return;
+async function generateDraftsFor(ids, { btnId, statusFn, afterFn } = {}) {
+  if (selectionBusy || !ids.length) return;
   selectionBusy = true;
-  const btn = $("ab-generate");
-  btn.disabled = true;
+  const btn = btnId ? $(btnId) : null;
+  if (btn) btn.disabled = true;
+  const setStatus = statusFn || setActionStatus;
   const tone = $("d-tone") ? $("d-tone").value : (userConfig && userConfig.default_tone) || "professional";
   const language = $("d-language") ? $("d-language").value : (userConfig && userConfig.default_language) || "auto";
   let ok = 0, fail = 0;
   for (let i = 0; i < ids.length; i++) {
-    setActionStatus(`Generating ${i + 1}/${ids.length}…`);
+    setStatus(`Generating ${i + 1}/${ids.length}…`);
     try {
       const r = await api(`/api/emails/${ids[i]}/draft`, {
         method: "POST", body: JSON.stringify({ tone, language }),
@@ -708,15 +740,302 @@ async function runSelectionDrafts() {
       ok++;
     } catch (_) { fail++; }
   }
-  setActionStatus("");
-  btn.disabled = false;
+  setStatus("");
+  if (btn) btn.disabled = false;
   selectionBusy = false;
   toast(`Drafts saved: ${ok}${fail ? ` · ${fail} failed` : ""}.`, fail ? "warn" : "ok");
-  loadEmails();
+  if (afterFn) afterFn();
 }
 
-function selectEmail(em, li) {
+// Generate + save Gmail drafts for the inbox selection.
+function runSelectionDrafts() {
+  return generateDraftsFor([...selectedIds], { btnId: "ab-generate", afterFn: loadEmails });
+}
+
+// ====================== Archive workspace (Phase 7) =========================
+// A label-as-folder browser over the emails Smart Archive filed. It reuses the
+// inbox's row rendering, the shared read pane, AI analysis, drafts and Smart
+// Archive — only the data source (a label page) and the actions (Restore) differ.
+function colorForLabel(name) {
+  const s = (name || "?").toLowerCase();
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+function enterArchive() {
+  // Re-entering the tab keeps the open folder; otherwise show the folder grid.
+  if (archiveFolder) {
+    $("archive-home").classList.add("hidden");
+    $("archive-folder").classList.remove("hidden");
+  } else {
+    $("archive-home").classList.remove("hidden");
+    $("archive-folder").classList.add("hidden");
+    loadFolders();
+  }
+}
+
+async function loadFolders() {
+  const empty = $("folder-empty");
+  empty.textContent = "Loading folders…";
+  empty.classList.remove("hidden");
+  try {
+    const { folders } = await api("/api/archive/folders");
+    archiveFolders = folders || [];
+    renderFolderGrid();
+  } catch (e) {
+    $("folder-grid").innerHTML = "";
+    empty.textContent = "Could not load folders: " + e.message;
+  }
+}
+
+function renderFolderGrid() {
+  const grid = $("folder-grid");
+  const empty = $("folder-empty");
+  if (!archiveFolders.length) {
+    grid.innerHTML = "";
+    empty.textContent = "No archived folders yet. Use ✨ Smart Archive on the Inbox to file emails by label.";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  grid.innerHTML = archiveFolders.map((f) => {
+    const color = colorForLabel(f.name);
+    return `<button class="folder-card" data-id="${escapeHtml(f.id)}">
+        <span class="folder-card-top">
+          <span class="folder-ico" style="background:${color}1a;color:${color}">📁</span>
+          ${f.unread ? `<span class="folder-unread">${f.unread}</span>` : ""}
+        </span>
+        <span class="folder-name">${escapeHtml(f.name)}</span>
+        <span class="folder-meta">${fmtNum(f.total)} email${f.total === 1 ? "" : "s"}</span>
+        <span class="folder-substats">
+          <span class="fs-read">${fmtNum(f.read)} read</span>
+          <span class="fs-dot">·</span>
+          <span class="fs-unread${f.unread ? " has" : ""}">${fmtNum(f.unread)} unread</span>
+        </span>
+      </button>`;
+  }).join("");
+  grid.querySelectorAll(".folder-card").forEach((c) =>
+    c.addEventListener("click", () => {
+      const folder = archiveFolders.find((f) => f.id === c.dataset.id);
+      if (folder) openFolder(folder);
+    }));
+}
+
+function openFolder(folder) {
+  archiveFolder = folder;
+  archiveEmails = [];
+  archiveNextToken = null;
+  archiveSearch = "";
+  clearArchiveSelection();
+  $("arch-search").value = "";
+  $("af-name").textContent = folder.name;
+  $("af-dot").style.background = colorForLabel(folder.name);
+  $("archive-home").classList.add("hidden");
+  $("archive-folder").classList.remove("hidden");
+  $("arch-email-list").innerHTML = "";
+  updateFolderHeaderCount();
+  loadFolderEmails(true);
+}
+
+function backToFolders() {
+  archiveFolder = null;
+  clearArchiveSelection();
+  $("archive-folder").classList.add("hidden");
+  $("archive-home").classList.remove("hidden");
+  loadFolders(); // refresh counts after any actions taken inside the folder
+}
+
+function updateFolderHeaderCount() {
+  if (!archiveFolder) return;
+  const f = archiveFolder;
+  $("af-count").textContent = `${fmtNum(f.total)} email${f.total === 1 ? "" : "s"} · ${fmtNum(f.unread)} unread`;
+}
+
+function reloadArchiveFolder() {
+  if (!archiveFolder) return;
+  archiveEmails = [];
+  archiveNextToken = null;
+  $("arch-email-list").innerHTML = "";
+  loadFolderEmails(true);
+}
+
+async function loadFolderEmails(reset) {
+  if (!archiveFolder || archiveLoading) return;
+  archiveLoading = true;
+  const empty = $("arch-empty");
+  if (reset) empty.textContent = "Loading…";
+  const moreBtn = $("arch-load-more");
+  moreBtn.disabled = true;
+  try {
+    const params = new URLSearchParams({ label_id: archiveFolder.id, page_size: "25" });
+    if (!reset && archiveNextToken) params.set("page_token", archiveNextToken);
+    const r = await api(`/api/archive/emails?${params}`);
+    const incoming = r.emails || [];
+    // De-dupe defensively in case a page boundary repeats an id.
+    const have = new Set(archiveEmails.map((e) => e.id));
+    archiveEmails.push(...incoming.filter((e) => !have.has(e.id)));
+    archiveNextToken = r.next_page_token || null;
+    renderArchiveList();
+  } catch (e) {
+    empty.textContent = "Error: " + e.message;
+  } finally {
+    archiveLoading = false;
+    moreBtn.disabled = false;
+  }
+}
+
+function visibleArchiveEmails() {
+  const q = archiveSearch.trim().toLowerCase();
+  return archiveEmails.filter((em) => matchesSearch(em, q));
+}
+
+function renderArchiveList() {
+  const list = $("arch-email-list");
+  const empty = $("arch-empty");
+  list.innerHTML = "";
+  const shown = visibleArchiveEmails();
+  if (!archiveEmails.length) {
+    empty.textContent = "This folder is empty.";
+  } else if (!shown.length) {
+    empty.textContent = "No emails match your search.";
+  } else {
+    empty.textContent = "";
+    shown.forEach((em) => list.appendChild(renderArchiveItem(em)));
+  }
+  // Result count + "Load more" affordance (paged server-side).
+  const rc = $("arch-result-count");
+  const total = archiveEmails.length;
+  rc.textContent = total ? (shown.length === total ? `${total} loaded` : `${shown.length} of ${total} loaded`) : "";
+  $("arch-more").classList.toggle("hidden", !archiveNextToken);
+  updateArchiveSelectionUI();
+}
+
+function renderArchiveItem(em) {
+  const li = document.createElement("li");
+  const isSel = archiveSelectedIds.has(em.id);
+  li.className = "email-item" + (em.is_unread ? " unread" : "") + (isSel ? " selected" : "");
+  li.dataset.id = em.id;
+  const av = avatarFor(em);
+  const badges = [`<span class="badge score ${em.replyable ? "yes" : "no"}">score ${em.score}</span>`, ...metaBadges(em)];
+  const dateTitle = escapeHtml(new Date(em.received_at).toLocaleString());
+  li.innerHTML = `
+    <label class="row-check" title="Select email">
+      <input type="checkbox" class="row-cb" ${isSel ? "checked" : ""} />
+    </label>
+    <div class="avatar" style="background:${av.color}">${escapeHtml(av.text)}</div>
+    <div class="email-main">
+      <div class="row-top">
+        <span class="from">${escapeHtml(em.sender_name || em.sender_email)}</span>
+        <span class="date" title="${dateTitle}">${escapeHtml(fmtRelativeDate(em.received_at))}</span>
+      </div>
+      <div class="subj-line">${importanceDot(em)}<span class="subj">${escapeHtml(em.subject)}</span></div>
+      <div class="snippet-line">${escapeHtml(em.snippet || "")}</div>
+      <div class="badges">${badges.join("")}</div>
+    </div>`;
+  const label = li.querySelector(".row-check");
+  const cb = li.querySelector(".row-cb");
+  label.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", (e) => toggleArchiveSelect(em.id, e.target.checked, li));
+  li.addEventListener("click", () => selectEmail(em, li, "archive"));
+  return li;
+}
+
+// --- Archive selection ------------------------------------------------------
+function toggleArchiveSelect(id, checked, li) {
+  if (checked) archiveSelectedIds.add(id); else archiveSelectedIds.delete(id);
+  if (li) li.classList.toggle("selected", checked);
+  updateArchiveSelectionUI();
+}
+function clearArchiveSelection() {
+  archiveSelectedIds.clear();
+  document.querySelectorAll("#arch-email-list .email-item.selected").forEach((n) => n.classList.remove("selected"));
+  document.querySelectorAll("#arch-email-list .row-cb:checked").forEach((cb) => { cb.checked = false; });
+  updateArchiveSelectionUI();
+}
+function updateArchiveSelectionUI() {
+  const n = archiveSelectedIds.size;
+  const bar = $("arch-action-bar");
+  if (bar) bar.classList.toggle("hidden", n === 0);
+  const nEl = $("arch-ab-n");
+  if (nEl) nEl.textContent = n;
+  const shown = visibleArchiveEmails();
+  const shownSelected = shown.filter((e) => archiveSelectedIds.has(e.id)).length;
+  const sa = $("arch-select-all");
+  if (sa) {
+    sa.checked = shown.length > 0 && shownSelected === shown.length;
+    sa.indeterminate = shownSelected > 0 && shownSelected < shown.length;
+  }
+}
+function onArchiveSelectAll(checked) {
+  const shown = visibleArchiveEmails();
+  shown.forEach((em) => { if (checked) archiveSelectedIds.add(em.id); else archiveSelectedIds.delete(em.id); });
+  document.querySelectorAll("#arch-email-list .email-item").forEach((li) => {
+    const on = archiveSelectedIds.has(li.dataset.id);
+    li.classList.toggle("selected", on);
+    const cb = li.querySelector(".row-cb");
+    if (cb) cb.checked = on;
+  });
+  updateArchiveSelectionUI();
+}
+function archActionIds() { return [...archiveSelectedIds]; }
+function setArchStatus(text) { const el = $("arch-ab-status"); if (el) el.textContent = text || ""; }
+
+// --- Archive actions (restore, read-state) ----------------------------------
+function setUnreadArchiveLocal(ids, unread) {
+  const set = new Set(ids);
+  let delta = 0;
+  archiveEmails.forEach((em) => {
+    if (!set.has(em.id)) return;
+    if (em.is_unread !== unread) delta += unread ? 1 : -1;
+    em.is_unread = unread;
+    const labels = new Set((em.label_ids || []).map((l) => l.toUpperCase()));
+    if (unread) labels.add("UNREAD"); else labels.delete("UNREAD");
+    em.label_ids = [...labels];
+  });
+  if (archiveFolder) {
+    archiveFolder.unread = Math.max(0, (archiveFolder.unread || 0) + delta);
+    updateFolderHeaderCount();
+  }
+}
+
+async function runArchiveMailbox(actionLabel, path, ids, optimisticFn) {
+  if (!ids.length || selectionBusy) return;
+  selectionBusy = true;
+  setArchStatus(`${actionLabel}…`);
+  try {
+    const r = await api(path, { method: "POST", body: JSON.stringify({ message_ids: ids }) });
+    if (optimisticFn) optimisticFn(ids);
+    clearArchiveSelection();
+    renderArchiveList();
+    const failed = r.failed || 0;
+    toast(`${actionLabel}: ${r.modified} email(s)${failed ? ` · ${failed} failed` : ""}.`, failed ? "warn" : "ok");
+  } catch (e) {
+    handleMailboxError(e);
+  } finally {
+    selectionBusy = false;
+    setArchStatus("");
+  }
+}
+
+function doRestore(ids) {
+  // Restore keeps the filing label, so emails legitimately stay in this folder
+  // (now also in the inbox). The folder count is unchanged; a toast confirms.
+  return runArchiveMailbox("Restored to Inbox", "/api/archive/restore", ids, null);
+}
+function doArchMarkRead(ids) {
+  return runArchiveMailbox("Marked read", "/api/mailbox/mark-read", ids, (i) => setUnreadArchiveLocal(i, false));
+}
+function doArchMarkUnread(ids) {
+  return runArchiveMailbox("Marked unread", "/api/mailbox/mark-unread", ids, (i) => setUnreadArchiveLocal(i, true));
+}
+function runArchiveDrafts() {
+  return generateDraftsFor(archActionIds(), { btnId: "arch-generate", statusFn: setArchStatus });
+}
+
+function selectEmail(em, li, ctx = "inbox") {
   selected = em;
+  mailContext = ctx;
   document.querySelectorAll(".email-item.active").forEach((n) => n.classList.remove("active"));
   li.classList.add("active");
   $("detail-empty").classList.add("hidden");
@@ -922,12 +1241,20 @@ function renderBulkReport(r) {
 
 // --- Tabs / Usage dashboard ------------------------------------------------
 function showTab(name) {
-  const inbox = name === "inbox";
-  $("view-inbox").classList.toggle("hidden", !inbox);
-  $("view-usage").classList.toggle("hidden", inbox);
-  $("tab-inbox").classList.toggle("active", inbox);
-  $("tab-usage").classList.toggle("active", !inbox);
-  if (!inbox) loadUsage();
+  currentTab = name;
+  const isUsage = name === "usage";
+  const isArchive = name === "archive";
+  // Inbox and Archive share one mail workspace (and one detail pane); only the
+  // left list-pane swaps. Usage is a separate full-width view.
+  $("view-mail").classList.toggle("hidden", isUsage);
+  $("view-usage").classList.toggle("hidden", !isUsage);
+  $("inbox-pane").classList.toggle("hidden", isArchive);
+  $("archive-pane").classList.toggle("hidden", !isArchive);
+  $("tab-inbox").classList.toggle("active", name === "inbox");
+  $("tab-archive").classList.toggle("active", isArchive);
+  $("tab-usage").classList.toggle("active", isUsage);
+  if (isUsage) loadUsage();
+  if (isArchive) enterArchive();
 }
 
 function renderBreakdown(el, rows, labelKey) {
@@ -1482,7 +1809,21 @@ $("send-btn").addEventListener("click", openSendModal);
 $("send-cancel").addEventListener("click", () => $("send-modal").classList.add("hidden"));
 $("send-confirm").addEventListener("click", confirmSend);
 $("tab-inbox").addEventListener("click", () => showTab("inbox"));
+$("tab-archive").addEventListener("click", () => showTab("archive"));
 $("tab-usage").addEventListener("click", () => showTab("usage"));
+
+// Archive workspace
+$("arch-refresh").addEventListener("click", loadFolders);
+$("arch-back").addEventListener("click", backToFolders);
+$("arch-search").addEventListener("input", (e) => { archiveSearch = e.target.value; renderArchiveList(); });
+$("arch-select-all").addEventListener("change", (e) => onArchiveSelectAll(e.target.checked));
+$("arch-restore").addEventListener("click", () => doRestore(archActionIds()));
+$("arch-generate").addEventListener("click", runArchiveDrafts);
+$("arch-smart").addEventListener("click", () => openSmartArchive(archActionIds(), "archive"));
+$("arch-read").addEventListener("click", () => doArchMarkRead(archActionIds()));
+$("arch-unread").addEventListener("click", () => doArchMarkUnread(archActionIds()));
+$("arch-clear").addEventListener("click", clearArchiveSelection);
+$("arch-load-more").addEventListener("click", () => loadFolderEmails(false));
 
 document.querySelectorAll(".chip").forEach((c) =>
   c.addEventListener("click", () => setBulkCount(parseInt(c.dataset.count, 10))));
@@ -1511,7 +1852,9 @@ $("label-apply").addEventListener("click", applyLabel);
 $("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
 $("smart-confirm").addEventListener("click", onSmartConfirm);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && selectedIds.size && !isModalOpen()) clearSelection();
+  if (e.key !== "Escape" || isModalOpen()) return;
+  if (currentTab === "archive" && archiveSelectedIds.size) clearArchiveSelection();
+  else if (selectedIds.size) clearSelection();
 });
 setFilterChip("f-needsreply", filterNeedsReply);
 

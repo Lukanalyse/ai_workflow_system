@@ -62,6 +62,15 @@ class MailboxService:
         """Classic Gmail archive: remove from the inbox (no label applied)."""
         return self._modify("archive", message_ids, remove=[LABEL_INBOX])
 
+    def restore_to_inbox(self, message_ids: list[str]) -> ActionResult:
+        """Inverse of archive: put messages back in the inbox.
+
+        Any filing label they carry (e.g. Finance) is kept — restoring only adds
+        ``INBOX`` back, so the email reappears in the inbox without losing how it
+        was filed. Used by the Archive workspace's "Restore to Inbox" action.
+        """
+        return self._modify("restore", message_ids, add=[LABEL_INBOX])
+
     # --- labels --------------------------------------------------------------
     def apply_label(
         self, message_ids: list[str], *, label_id: str, archive: bool = False
