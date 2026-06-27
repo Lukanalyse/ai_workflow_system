@@ -269,6 +269,9 @@ class EmailRefIn(BaseModel):
 class SmartArchiveRequest(BaseModel):
     # id + sender per email so the rules engine can decide without a Gmail fetch.
     emails: list[EmailRefIn] = []
+    # When re-filing from an Archive folder, the label to strip so the email
+    # leaves its previous folder instead of being in two folders at once.
+    remove_label_id: str | None = None
 
 
 class SettingsRequest(BaseModel):
@@ -704,7 +707,9 @@ def smart_archive_execute(body: SmartArchiveRequest) -> dict:
     """Create-if-needed + apply label + archive each group (rules + cache only, no LLM)."""
     return _run_mailbox_action(
         "smart_archive",
-        lambda: container.smart_archive_service.execute(_to_refs(body)).as_dict(),
+        lambda: container.smart_archive_service.execute(
+            _to_refs(body), remove_label_id=body.remove_label_id
+        ).as_dict(),
     )
 
 

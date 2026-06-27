@@ -128,8 +128,12 @@ class SmartArchiveService:
         items.sort(key=lambda i: (-i.count, i.label.lower()))
         return ArchivePlan(items=items, total_selected=len(refs), undecided_ids=undecided)
 
-    def execute(self, refs: list[EmailRef]) -> ArchiveResult:
-        """Create-if-needed + apply label + archive each group, then learn from it."""
+    def execute(self, refs: list[EmailRef], *, remove_label_id: str | None = None) -> ArchiveResult:
+        """Create-if-needed + apply label + archive each group, then learn from it.
+
+        ``remove_label_id`` (set when re-filing from an Archive folder) strips the
+        email's previous folder label so it moves rather than ending up in both.
+        """
         refs, decisions, undecided, groups = self._grouped(refs)
         if not groups:
             return ArchiveResult(
@@ -155,8 +159,14 @@ class SmartArchiveService:
                     label_id = new_label["id"]
                     existing[key] = label_id
                     created.append(label)
-                # Atomic per group: add label + remove INBOX in one batchModify.
-                result = self._mailbox.apply_label(ids, label_id=label_id, archive=True)
+                # Atomic per group: add label + remove INBOX (and the previous
+                # folder label when re-filing) in one batchModify.
+                result = self._mailbox.apply_label(
+                    ids,
+                    label_id=label_id,
+                    archive=True,
+                    remove_labels=[remove_label_id] if remove_label_id else None,
+                )
                 by_label[label] = result.modified
                 archived += result.modified
                 if result.failures:

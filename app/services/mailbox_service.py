@@ -73,15 +73,26 @@ class MailboxService:
 
     # --- labels --------------------------------------------------------------
     def apply_label(
-        self, message_ids: list[str], *, label_id: str, archive: bool = False
+        self,
+        message_ids: list[str],
+        *,
+        label_id: str,
+        archive: bool = False,
+        remove_labels: list[str] | None = None,
     ) -> ActionResult:
         """Apply an existing label to messages, optionally archiving too.
 
-        ``archive=True`` is the seam Smart Archive / Auto Filing will use to
-        file-and-archive in one step.
+        ``archive=True`` is the seam Smart Archive / Auto Filing uses to
+        file-and-archive in one step. ``remove_labels`` strips other labels in
+        the same call — used when *re*-filing an already-archived email so it
+        leaves its previous folder instead of ending up in two at once.
         """
-        remove = [LABEL_INBOX] if archive else None
-        return self._modify("apply_label", message_ids, add=[label_id], remove=remove)
+        remove = [r for r in (remove_labels or []) if r and r != label_id]
+        if archive:
+            remove.append(LABEL_INBOX)
+        return self._modify(
+            "apply_label", message_ids, add=[label_id], remove=remove or None
+        )
 
     def list_labels(self) -> list[dict]:
         labels = self._provider.list_labels()

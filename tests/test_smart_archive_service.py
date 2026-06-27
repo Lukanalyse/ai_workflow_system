@@ -61,14 +61,17 @@ class FakeMailbox:
         self.created.append(name)
         return label
 
-    def apply_label(self, ids, *, label_id, archive=False):
+    def apply_label(self, ids, *, label_id, archive=False, remove_labels=None):
         name = next((l["name"] for l in self.labels if l["id"] == label_id), label_id)
         if name in self._fail:
             return ActionResult(
                 action="apply_label", requested=len(ids), modified=0,
                 failures=[{"message_ids": ids, "error": "Gmail 500"}],
             )
-        self.applied.append({"ids": list(ids), "label_id": label_id, "archive": archive})
+        self.applied.append({
+            "ids": list(ids), "label_id": label_id, "archive": archive,
+            "remove_labels": list(remove_labels or []),
+        })
         return ActionResult(action="apply_label", requested=len(ids), modified=len(ids))
 
 
@@ -86,6 +89,24 @@ def test_single_email_creates_label_and_archives():
     assert res.archived == 1 and res.labels_created == ["Research"]
     assert mb.applied[0]["archive"] is True
     assert mb.list_calls == 1
+
+
+def test_refile_from_folder_removes_previous_label():
+    # Re-filing an already-archived email must strip its old folder label so it
+    # moves instead of living in two folders at once.
+    mb = FakeMailbox(existing=[
+        {"id": "L_old", "name": "Other", "type": "user"},
+        {"id": "L_g", "name": "Google", "type": "user"},
+    ])
+    res = _svc({"m1": _a("Google")}, mb).execute(_refs("m1"), remove_label_id="L_old")
+    assert res.archived == 1
+    assert mb.applied[0]["remove_labels"] == ["L_old"]
+
+
+def test_refile_without_remove_label_keeps_old_behaviour():
+    mb = FakeMailbox(existing=[])
+    _svc({"m1": _a("Research")}, mb).execute(_refs("m1"))
+    assert mb.applied[0]["remove_labels"] == []
 
 
 def test_multiple_groups_reuse_existing_and_create_missing():

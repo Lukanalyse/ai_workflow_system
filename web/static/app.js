@@ -826,8 +826,12 @@ async function confirmSmartArchive() {
         refs.push(overridden ? { id: mid, sender, subject, override: chosen } : { id: mid, sender, subject });
       }
     }
+    const payload = { emails: refs };
+    // Re-filing from an Archive folder: strip the current folder's label so the
+    // email moves out of it instead of living in two folders at once.
+    if (smartContext === "archive" && archiveFolder) payload.remove_label_id = archiveFolder.id;
     const r = await api("/api/smart-archive/execute", {
-      method: "POST", body: JSON.stringify({ emails: refs }),
+      method: "POST", body: JSON.stringify(payload),
     });
     renderSmartResult(r);
     if (smartContext === "archive") {

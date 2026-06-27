@@ -99,7 +99,7 @@ class _FakeMailbox:
         self.labels.append(lab)
         return lab
 
-    def apply_label(self, ids, *, label_id, archive=False):
+    def apply_label(self, ids, *, label_id, archive=False, remove_labels=None):
         self.applied.append({"ids": list(ids), "label_id": label_id})
         return ActionResult(action="apply_label", requested=len(ids), modified=len(ids))
 

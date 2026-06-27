@@ -83,6 +83,17 @@ def test_apply_label_with_archive() -> None:
     assert p.calls[0]["add"] == ["Label_7"] and p.calls[0]["remove"] == ["INBOX"]
 
 
+def test_apply_label_removes_other_labels_but_never_itself() -> None:
+    p = FakeProvider()
+    MailboxService(p).apply_label(
+        ["m1"], label_id="L_g", archive=True, remove_labels=["L_old", "L_g"]
+    )
+    call = p.calls[0]
+    assert call["add"] == ["L_g"]
+    assert "L_old" in call["remove"] and "INBOX" in call["remove"]
+    assert "L_g" not in call["remove"]  # never strip the label we're applying
+
+
 def test_empty_ids_is_a_noop() -> None:
     p = FakeProvider()
     r = MailboxService(p).archive([])
