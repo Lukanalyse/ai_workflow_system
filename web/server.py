@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -410,6 +416,65 @@ def get_email(message_id: str) -> dict:
         "has_attachments": msg.has_attachments,
         "attachments": [asdict(a) for a in msg.attachments],
     }
+
+
+# Only these types are ever served inline; everything else is forced to download
+# (octet-stream + attachment) so untrusted content can't be sniffed/executed.
+_INLINE_ATTACHMENT_MIMES = {
+    "image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "application/pdf",
+}
+_MAX_ATTACHMENT_BYTES = 26_214_400  # 25 MB — Gmail's own attachment ceiling
+
+
+def _safe_attachment_filename(name: str) -> str:
+    name = (name or "attachment").replace("\\", "_").replace("/", "_")
+    name = _re.sub(r'[\r\n"]+', "", name).strip()
+    return (name or "attachment")[:200]
+
+
+@app.get("/api/emails/{message_id}/attachment")
+def get_attachment(message_id: str, index: int, download: bool = False) -> Response:
+    """Serve one attachment's bytes (by position) for inline preview or download.
+
+    Addressed by ``index`` rather than attachmentId on purpose: Gmail's
+    attachmentId is ephemeral and can differ between ``messages.get`` calls, so
+    we re-fetch the message and use the *fresh* id from that same response.
+
+    Security: the MIME/filename are read authoritatively from the message (not
+    trusted from the client). Only an image/PDF allowlist is served ``inline``;
+    everything else is ``application/octet-stream`` + ``attachment`` so the
+    browser downloads it instead of rendering it. ``nosniff`` blocks MIME
+    sniffing either way.
+    """
+    _require_ready()
+    try:
+        msg = container.email_service.get_message(message_id)
+        if index < 0 or index >= len(msg.attachments):
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        att = msg.attachments[index]
+        if att.size and att.size > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Attachment is too large to open here — open it from Gmail.",
+            )
+        data = container.email_service.get_attachment(message_id, att.attachment_id)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to fetch attachment %s/%s", message_id, attachment_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    mime = (att.mime_type or "").lower()
+    inline_ok = (mime in _INLINE_ATTACHMENT_MIMES) and not download
+    media_type = mime if inline_ok else "application/octet-stream"
+    disposition = "inline" if inline_ok else "attachment"
+    filename = _safe_attachment_filename(att.name)
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, max-age=300",
+    }
+    return Response(content=data, media_type=media_type, headers=headers)
 
 
 @app.post("/api/emails/{message_id}/draft")

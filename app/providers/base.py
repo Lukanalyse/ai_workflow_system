@@ -69,6 +69,10 @@ class EmailProvider(ABC):
     def get_message(self, message_id: str) -> EmailMessage:
         """Fetch a single message (with full body) by id."""
 
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """Fetch a single attachment's raw bytes."""
+        raise NotImplementedError("This provider does not support attachment download.")
+
     @abstractmethod
     def create_draft(self, message: EmailMessage, body: str) -> DraftResult:
         """Create a reply draft for `message`. Never sends."""

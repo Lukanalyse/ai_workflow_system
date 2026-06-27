@@ -126,3 +126,6 @@ class EmailService:
 
     def get_message(self, message_id: str) -> EmailMessage:
         return self._provider.get_message(message_id)
+
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        return self._provider.get_attachment(message_id, attachment_id)

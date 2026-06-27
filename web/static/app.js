@@ -143,20 +143,67 @@ function fmtSize(bytes) {
   if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
   return (bytes / 1024 / 1024).toFixed(1) + " MB";
 }
-function renderAttachments(el, attachments) {
+function isPreviewable(mime, name) {
+  const m = (mime || "").toLowerCase();
+  const n = (name || "").toLowerCase();
+  return m.startsWith("image/") || m === "application/pdf" ||
+    /\.(png|jpe?g|gif|webp|pdf)$/.test(n);
+}
+// Gmail's attachmentId is ephemeral, so we address attachments by position;
+// the server resolves the fresh id on its side.
+function attachmentUrl(messageId, index, download) {
+  return `/api/emails/${encodeURIComponent(messageId)}/attachment?index=${index}` +
+    `${download ? "&download=true" : ""}`;
+}
+
+function renderAttachments(el, attachments, messageId) {
   if (!el) return;
   attachments = attachments || [];
   if (!attachments.length) { el.classList.add("hidden"); el.innerHTML = ""; return; }
   el.classList.remove("hidden");
-  // Each chip reserves a slot for a future PDF/image preview (Phase 9): clicking
-  // is a no-op today, but the markup/affordance is already in place.
-  el.innerHTML = attachments.map((a) => {
+  el.innerHTML = attachments.map((a, i) => {
     const size = fmtSize(a.size);
-    return `<span class="attach-chip" title="${escapeHtml(a.mime_type || "")} — preview coming soon">` +
+    const canPreview = !!messageId && a.attachment_id && isPreviewable(a.mime_type, a.name);
+    const previewBtn = canPreview
+      ? `<button class="att-act" data-act="preview" data-i="${i}" title="Preview" aria-label="Preview">👁</button>` : "";
+    const downloadBtn = messageId && a.attachment_id
+      ? `<button class="att-act" data-act="download" data-i="${i}" title="Download" aria-label="Download">↓</button>` : "";
+    return `<span class="attach-chip" title="${escapeHtml(a.mime_type || "")}">` +
       `<span class="att-icon">${attachIcon(a.mime_type, a.name)}</span>` +
       `<span class="att-name">${escapeHtml(a.name)}</span>` +
-      `${size ? `<span class="att-size">${size}</span>` : ""}</span>`;
+      `${size ? `<span class="att-size">${size}</span>` : ""}${previewBtn}${downloadBtn}</span>`;
   }).join("");
+  if (!messageId) return;
+  el.querySelectorAll(".att-act").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const i = Number(b.dataset.i);
+      const att = attachments[i];
+      if (!att) return;
+      if (b.dataset.act === "preview") openAttachmentPreview(messageId, att, i);
+      else downloadAttachment(messageId, att, i);
+    }));
+}
+
+function downloadAttachment(messageId, att, index) {
+  const a = document.createElement("a");
+  a.href = attachmentUrl(messageId, index, true);
+  a.download = att.name || "attachment";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function openAttachmentPreview(messageId, att, index) {
+  const url = attachmentUrl(messageId, index, false);
+  const isImg = (att.mime_type || "").toLowerCase().startsWith("image/") ||
+    /\.(png|jpe?g|gif|webp)$/.test((att.name || "").toLowerCase());
+  $("attach-title").textContent = att.name || "Attachment";
+  $("attach-body").innerHTML = isImg
+    ? `<img class="att-preview-img" alt="${escapeHtml(att.name || "")}" src="${url}" />`
+    : `<iframe class="att-preview-frame" title="${escapeHtml(att.name || "")}" src="${url}"></iframe>`;
+  $("attach-download").onclick = () => downloadAttachment(messageId, att, index);
+  $("attach-modal").classList.remove("hidden");
 }
 
 // --- Visual identity: avatars, badges, importance ---------------------------
@@ -1269,7 +1316,7 @@ async function renderBody(em) {
 
 function renderAttachmentCard(em, attachments) {
   const list = attachments || em.attachments || [];
-  renderAttachments($("d-attachments"), list);
+  renderAttachments($("d-attachments"), list, em.id);
   $("d-attach-count").textContent = list.length ? `· ${list.length}` : "";
   $("d-attach-card").classList.toggle("hidden", list.length === 0);
 }
@@ -2127,6 +2174,8 @@ $("label-cancel").addEventListener("click", () => $("label-modal").classList.add
 $("label-apply").addEventListener("click", applyLabel);
 $("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
 $("smart-confirm").addEventListener("click", onSmartConfirm);
+$("attach-close").addEventListener("click", () => $("attach-modal").classList.add("hidden"));
+$("attach-modal").addEventListener("click", (e) => { if (e.target.id === "attach-modal") $("attach-modal").classList.add("hidden"); });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || isModalOpen()) return;
   const menuOpen = !$("ab-menu").classList.contains("hidden") || !$("arch-menu").classList.contains("hidden");

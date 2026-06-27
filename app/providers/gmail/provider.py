@@ -149,6 +149,11 @@ class GmailProvider(EmailProvider):
         assert self._reader is not None
         return _to_email_message(self._reader.get_message(message_id))
 
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        self._ensure_service()
+        assert self._reader is not None
+        return self._reader.get_attachment(message_id, attachment_id)
+
     def create_draft(self, message: EmailMessage, body: str) -> DraftResult:
         self._ensure_service()
         assert self._draft_creator is not None

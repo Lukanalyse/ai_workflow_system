@@ -60,6 +60,28 @@ test("an email with attachments shows the Attachments card", async () => {
   click(app.window, app.document.querySelector("#email-list .email-item .subj"));
   await waitFor(() => !$(app.document, "d-attach-card").classList.contains("hidden"));
   assert.match($(app.document, "d-attachments").textContent, /invoice\.pdf/);
+  // Preview + Download affordances render for a PDF.
+  assert.ok(app.document.querySelector('#d-attachments .att-act[data-act="preview"]'));
+  assert.ok(app.document.querySelector('#d-attachments .att-act[data-act="download"]'));
+});
+
+test("previewing an attachment opens a modal at the secure inline URL", async () => {
+  const app = makeApp({ routes: {
+    "GET /api/emails": { emails: [cand("m1")] },
+    "GET /api/emails/m1": { id: "m1", body: "hi", attachments: [
+      { name: "invoice.pdf", mime_type: "application/pdf", size: 2048, attachment_id: "att9" },
+    ] },
+  } });
+  await app.window.loadEmails();
+  click(app.window, app.document.querySelector("#email-list .email-item .subj"));
+  await waitFor(() => app.document.querySelector('#d-attachments .att-act[data-act="preview"]'));
+  click(app.window, app.document.querySelector('#d-attachments .att-act[data-act="preview"]'));
+  assert.ok(!$(app.document, "attach-modal").classList.contains("hidden"));
+  assert.equal($(app.document, "attach-title").textContent, "invoice.pdf");
+  const frame = app.document.querySelector("#attach-body iframe, #attach-body img");
+  assert.ok(frame, "preview renders an iframe/img");
+  // Addressed by index; inline preview carries no &download.
+  assert.match(frame.getAttribute("src"), /\/api\/emails\/m1\/attachment\?index=0$/);
 });
 
 // --- Inbox / Archive navigation ---------------------------------------------

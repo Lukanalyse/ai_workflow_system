@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=19" />
+  <link rel="stylesheet" href="/static/style.css?v=20" />
 </head>
 <body>
   <header class="topbar">
@@ -621,8 +621,22 @@ unsubscribe"></textarea>
     </div>
   </div>
 
+  <!-- Attachment preview (image / PDF) -->
+  <div id="attach-modal" class="modal hidden">
+    <div class="modal-card attach-card">
+      <div class="attach-head">
+        <h2 id="attach-title">Attachment</h2>
+        <div class="attach-head-actions">
+          <button id="attach-download" class="btn small">↓ Download</button>
+          <button id="attach-close" class="btn ghost small">Close</button>
+        </div>
+      </div>
+      <div id="attach-body" class="attach-body"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=23"></script>
+  <script src="/static/app.js?v=24"></script>
 </body>
 </html>

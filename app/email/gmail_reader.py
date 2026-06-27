@@ -201,6 +201,20 @@ class GmailReader:
     def get_message(self, message_id: str) -> GmailMessage:
         return self._parse_message(self._get_full(message_id))
 
+    def get_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """Fetch a single attachment's raw bytes (base64url-decoded)."""
+        resp = gmail_http.execute(
+            self.service.users().messages().attachments().get(
+                userId=self.user_id, messageId=message_id, id=attachment_id
+            ),
+            op="attachments.get",
+        )
+        data = resp.get("data", "")
+        if not data:
+            return b""
+        missing_padding = (-len(data)) % 4
+        return base64.urlsafe_b64decode(data + ("=" * missing_padding))
+
     def _get_full(self, message_id: str) -> dict:
         return gmail_http.execute(
             self.service.users().messages().get(

@@ -213,6 +213,70 @@ def test_get_email_preserves_plain_body(client, restore_container):
     assert r.json()["body"] == "Line one\n\nLine two"  # no signature/thread stripping
 
 
+# --- Attachments (Phase B) ---------------------------------------------------
+def _email_with_attachment(name, mime, *, att_id="a1", size=4):
+    from datetime import datetime, timezone
+
+    from app.email.attachment_detector import AttachmentInfo
+    from app.providers.base import EmailMessage
+
+    return EmailMessage(
+        id="m1", thread_id="t1", subject="Hello", sender_email="a@b.com", sender_name="A",
+        internet_message_id="<x>", received_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        snippet="snip", body_text="body", label_ids=[], has_attachments=True,
+        attachment_names=[name],
+        attachments=[AttachmentInfo(name=name, mime_type=mime, size=size, attachment_id=att_id)],
+    )
+
+
+def _attach_container(c, email, payload=b"%PDF-1.4"):
+    c.degraded = False
+    c.settings = AppSettings()
+
+    class _Svc:
+        def get_message(self, mid):
+            return email
+
+        def get_attachment(self, mid, aid):
+            return payload
+
+    c.email_service = _Svc()
+
+
+def test_attachment_pdf_served_inline_safely(client, restore_container):
+    _attach_container(restore_container, _email_with_attachment("invoice.pdf", "application/pdf"))
+    r = client.get("/api/emails/m1/attachment?index=0")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert "inline" in r.headers["content-disposition"]
+    assert "invoice.pdf" in r.headers["content-disposition"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.content == b"%PDF-1.4"
+
+
+def test_attachment_unsafe_type_forced_to_download(client, restore_container):
+    # An HTML attachment must never be served inline (XSS) — forced to download.
+    _attach_container(restore_container, _email_with_attachment("evil.html", "text/html"), payload=b"<script>")
+    r = client.get("/api/emails/m1/attachment?index=0")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert "attachment" in r.headers["content-disposition"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_attachment_download_param_forces_attachment(client, restore_container):
+    _attach_container(restore_container, _email_with_attachment("invoice.pdf", "application/pdf"))
+    r = client.get("/api/emails/m1/attachment?index=0&download=true")
+    assert "attachment" in r.headers["content-disposition"]
+    assert r.headers["content-type"].startswith("application/octet-stream")
+
+
+def test_attachment_404_when_index_out_of_range(client, restore_container):
+    _attach_container(restore_container, _email_with_attachment("invoice.pdf", "application/pdf"))
+    assert client.get("/api/emails/m1/attachment?index=9").status_code == 404
+    assert client.get("/api/emails/m1/attachment?index=-1").status_code == 404
+
+
 # --- Archive workspace endpoints (Phase 7) -----------------------------------
 def test_archive_folders_ok(client, restore_container):
     from app.services.archive_service import ArchiveFolder
