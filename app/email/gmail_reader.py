@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 LIST_MAX_RESULTS = 500
 # Gmail's messages.list returns at most 500 ids per page.
 _GMAIL_PAGE_SIZE = 500
+# Messages per batched messages.get round-trip. Gmail recommends <=100 sub-
+# requests per batch; 50 keeps each batch payload comfortably small.
+_BATCH_GET_SIZE = 50
 
 NOREPLY_PATTERN = re.compile(r"(?:^|[._-])(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply)(?:@|$)")
 AUTOMATION_SENDER_MARKERS = {
@@ -193,6 +196,76 @@ class GmailReader:
         )
         return self._parse_message(detail)
 
+    def _get_full(self, message_id: str) -> dict:
+        return (
+            self.service.users()
+            .messages()
+            .get(userId=self.user_id, id=message_id, format="full")
+            .execute()
+        )
+
+    def _sequential_get(self, ids: list[str]) -> list[GmailMessage]:
+        return [self._parse_message(self._get_full(mid)) for mid in ids]
+
+    def _batch_get(self, ids: list[str]) -> list[GmailMessage]:
+        """Fetch many messages in a few HTTP round-trips via Gmail's batch API.
+
+        Each ``messages.get`` keeps ``format="full"`` so the parsed result — and
+        therefore replyability — is byte-for-byte identical to the per-id path;
+        only the number of round-trips changes (N gets -> ceil(N/50) batches).
+        Responses can arrive out of order, so they are reassembled into the
+        original ``ids`` order. A per-message failure is retried individually,
+        preserving the previous "raise on a bad get" behaviour.
+        """
+        results: dict[str, dict] = {}
+        errors: dict[str, Exception] = {}
+
+        def _cb(request_id, response, exception):
+            if exception is not None:
+                errors[request_id] = exception
+            else:
+                results[request_id] = response
+
+        for start in range(0, len(ids), _BATCH_GET_SIZE):
+            chunk = ids[start : start + _BATCH_GET_SIZE]
+            batch = self.service.new_batch_http_request()
+            for mid in chunk:
+                batch.add(
+                    self.service.users().messages().get(
+                        userId=self.user_id, id=mid, format="full"
+                    ),
+                    request_id=mid,
+                    callback=_cb,
+                )
+            batch.execute()
+
+        # Retry the (rare) per-message failures one by one; a still-failing get
+        # raises, exactly as the old sequential path did.
+        for mid in list(errors):
+            results[mid] = self._get_full(mid)
+
+        return [self._parse_message(results[mid]) for mid in ids if mid in results]
+
+    def _fetch_messages(self, ids: list[str]) -> list[GmailMessage]:
+        """Fetch full messages for ``ids`` (batched when the client supports it).
+
+        Falls back to sequential gets if the service has no batch support (e.g.
+        a stub in tests) or if the batch mechanism itself fails, so the listing
+        never breaks — it just gets slower in that degraded case.
+        """
+        if not ids:
+            return []
+        if not hasattr(self.service, "new_batch_http_request"):
+            return self._sequential_get(ids)
+        try:
+            return self._batch_get(ids)
+        except Exception:  # noqa: BLE001 - batch transport problem -> safe fallback
+            logger.warning(
+                "Batched message fetch failed; falling back to sequential gets",
+                exc_info=True,
+            )
+            return self._sequential_get(ids)
+
     def _collect_ids(self, query: str, target: int) -> list[str]:
         """Page through messages.list until `target` ids are gathered or the
         result set is exhausted. Only ids are pulled here (cheap); bodies are
@@ -258,32 +331,14 @@ class GmailReader:
         )
         ids = [str(r["id"]) for r in resp.get("messages", [])]
         next_token = resp.get("nextPageToken")
-        messages: list[GmailMessage] = []
-        for message_id in ids:
-            detail = (
-                self.service.users()
-                .messages()
-                .get(userId=self.user_id, id=message_id, format="full")
-                .execute()
-            )
-            messages.append(self._parse_message(detail))
-        return messages, next_token
+        return self._fetch_messages(ids), next_token
 
     def list_latest_unread(self, config: GmailReadConfig) -> list[GmailMessage]:
         target = max(1, min(config.max_emails, LIST_MAX_RESULTS))
         query = self._build_query(config)
         logger.info("Fetching Gmail messages: target=%s query=%s", target, query)
         ids = self._collect_ids(query, target)
-        messages: list[GmailMessage] = []
-        for message_id in ids:
-            detail = (
-                self.service.users()
-                .messages()
-                .get(userId=self.user_id, id=message_id, format="full")
-                .execute()
-            )
-            messages.append(self._parse_message(detail))
-        return messages
+        return self._fetch_messages(ids)
 
     def evaluate_replyability(self, message: GmailMessage, *, exclude_noreply: bool = True) -> tuple[bool, str]:
         label_set = {label.upper() for label in message.label_ids}

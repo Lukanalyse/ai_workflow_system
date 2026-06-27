@@ -252,6 +252,117 @@ def test_get_label_counts() -> None:
     assert labels.get_calls == ["L_fin"]
 
 
+# --- Phase 8.3: batched message fetch ----------------------------------------
+class _Req:
+    """Opaque request token whose .execute() returns the message body (used by
+    the individual-retry / sequential-fallback paths)."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def execute(self):
+        return self._payload
+
+
+class _FakeBatch:
+    def __init__(self, bodies, fail_ids):
+        self._bodies = bodies
+        self._fail = fail_ids
+        self._items = []
+
+    def add(self, request, request_id=None, callback=None):
+        self._items.append((request_id, callback))
+
+    def execute(self):
+        # Invoke callbacks in REVERSE order to prove the reader reassembles
+        # results back into the original id order regardless of arrival order.
+        for rid, cb in reversed(self._items):
+            if rid in self._fail:
+                cb(rid, None, RuntimeError("batch sub-failure"))
+            else:
+                cb(rid, self._bodies[rid], None)
+
+
+class _BatchMessages:
+    def __init__(self, bodies):
+        self._bodies = bodies
+        self.get_ids = []
+
+    def get(self, *, userId, id, format):
+        self.get_ids.append(id)
+        return _Req(self._bodies.get(id))
+
+
+class _BatchSvc:
+    def __init__(self, bodies, fail_ids=frozenset()):
+        self._bodies = bodies
+        self._fail = fail_ids
+        self.msgs = _BatchMessages(bodies)
+        self.batch_count = 0
+
+    def users(self):
+        return self
+
+    def messages(self):
+        return self.msgs
+
+    def new_batch_http_request(self):
+        self.batch_count += 1
+        return _FakeBatch(self._bodies, self._fail)
+
+
+def _reader_with(service) -> GmailReader:
+    r = GmailReader.__new__(GmailReader)
+    r.user_id = "me"
+    r.service = service
+    return r
+
+
+def test_batch_fetch_preserves_order_and_chunks(monkeypatch) -> None:
+    import app.email.gmail_reader as gr
+
+    monkeypatch.setattr(gr, "_BATCH_GET_SIZE", 2)  # force several batches
+    ids = ["m1", "m2", "m3", "m4", "m5"]
+    svc = _BatchSvc({m: _body(m) for m in ids})
+    out = _reader_with(svc)._fetch_messages(ids)
+
+    assert [m.id for m in out] == ids          # reassembled in order despite reversed callbacks
+    assert svc.batch_count == 3                  # ceil(5 / 2)
+    assert svc.msgs.get_ids == ids              # one get built per id
+
+
+def test_batch_fetch_retries_failed_member_individually() -> None:
+    ids = ["m1", "m2", "m3"]
+    svc = _BatchSvc({m: _body(m) for m in ids}, fail_ids={"m2"})
+    out = _reader_with(svc)._fetch_messages(ids)
+    # m2 failed inside the batch but is recovered by an individual retry.
+    assert [m.id for m in out] == ids
+
+
+def test_batch_transport_failure_falls_back_to_sequential() -> None:
+    class _BoomBatchSvc(_BatchSvc):
+        def new_batch_http_request(self):
+            raise RuntimeError("no batch endpoint")
+
+    ids = ["m1", "m2"]
+    svc = _BoomBatchSvc({m: _body(m) for m in ids})
+    out = _reader_with(svc)._fetch_messages(ids)
+    assert [m.id for m in out] == ids          # sequential fallback still works
+
+
+def test_fetch_without_batch_support_uses_sequential() -> None:
+    msgs = _LabelMessages(by_label={}, bodies={"m1": _body("m1"), "m2": _body("m2")})
+    svc = _LabelSvc(messages=msgs)  # no new_batch_http_request attribute
+    out = _reader_with(svc)._fetch_messages(["m1", "m2"])
+    assert [m.id for m in out] == ["m1", "m2"]
+
+
+def test_fetch_empty_is_noop() -> None:
+    svc = _BatchSvc({})
+    assert _reader_with(svc)._fetch_messages([]) == []
+    assert svc.batch_count == 0
+
+
 def test_list_by_label_returns_messages_and_token() -> None:
     r = GmailReader.__new__(GmailReader)
     r.user_id = "me"
