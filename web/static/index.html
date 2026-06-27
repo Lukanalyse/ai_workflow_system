@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=15" />
+  <link rel="stylesheet" href="/static/style.css?v=16" />
 </head>
 <body>
   <header class="topbar">
@@ -113,19 +113,25 @@
         <span id="result-count" class="muted"></span>
       </div>
 
-      <!-- Bulk action bar — appears only when ≥1 email is selected. -->
+      <!-- Selection bar — light, appears only when ≥1 email is selected. -->
       <div id="action-bar" class="action-bar hidden">
         <span class="ab-count"><b id="ab-n">0</b> selected</span>
-        <div class="ab-actions">
-          <button id="ab-generate" class="btn small primary">Generate Draft</button>
-          <button id="ab-smart" class="btn small ai">✨ Smart Archive</button>
-          <button id="ab-archive" class="btn small">Archive</button>
-          <button id="ab-label" class="btn small">Label</button>
-          <button id="ab-read" class="btn small">Mark Read</button>
-          <button id="ab-unread" class="btn small">Mark Unread</button>
+        <button id="ab-generate" class="btn small primary">Generate Draft</button>
+        <button id="ab-smart" class="btn small ai">✨ Smart Archive</button>
+        <div class="menu-wrap">
+          <button id="ab-more" class="btn small" aria-haspopup="true" aria-expanded="false">More <span class="caret" aria-hidden="true">▾</span></button>
+          <div id="ab-menu" class="menu hidden" role="menu">
+            <button class="menu-item" id="ab-move" role="menuitem"><span class="mi-ico" aria-hidden="true">📁</span> Move to folder…</button>
+            <button class="menu-item" id="ab-label" role="menuitem"><span class="mi-ico" aria-hidden="true">🏷️</span> Apply label…</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" id="ab-read" role="menuitem"><span class="mi-ico" aria-hidden="true">✓</span> Mark as read</button>
+            <button class="menu-item" id="ab-unread" role="menuitem"><span class="mi-ico" aria-hidden="true">◌</span> Mark as unread</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" id="ab-clear-menu" role="menuitem"><span class="mi-ico" aria-hidden="true">✕</span> Clear selection</button>
+          </div>
         </div>
         <span id="ab-status" class="ab-status muted"></span>
-        <button id="ab-clear" class="btn small ghost">Clear</button>
+        <button id="ab-clear" class="btn ghost icon small" title="Clear selection" aria-label="Clear selection">✕</button>
       </div>
 
       <ul id="email-list" class="email-list"></ul>
@@ -567,10 +573,10 @@ unsubscribe"></textarea>
     </div>
   </div>
 
-  <!-- Apply / create label -->
+  <!-- Apply label / Move to folder -->
   <div id="label-modal" class="modal hidden">
     <div class="modal-card">
-      <h2>Apply a label</h2>
+      <h2 id="label-modal-title">Apply a label</h2>
       <p class="muted"><span id="label-target-count">0</span> email(s) selected.</p>
       <label>Choose an existing label
         <select id="label-select"><option value="">— select —</option></select>
@@ -579,7 +585,7 @@ unsubscribe"></textarea>
       <label>Create a new label
         <input id="label-new" type="text" placeholder="e.g. Finance" autocomplete="off" />
       </label>
-      <label class="toggle"><input id="label-archive" type="checkbox" /> Archive after labelling</label>
+      <label class="toggle" id="label-archive-row"><input id="label-archive" type="checkbox" /> Archive after labelling (remove from inbox)</label>
       <p id="label-status" class="muted"></p>
       <div class="controls">
         <button id="label-cancel" class="btn ghost">Cancel</button>
@@ -603,6 +609,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>

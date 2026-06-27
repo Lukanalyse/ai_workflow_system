@@ -76,22 +76,45 @@ function selectRow(window, row) {
   cb.dispatchEvent(new window.Event("change", { bubbles: true }));
 }
 
-test("archiving selected inbox emails removes them and calls the API", async () => {
+test("the Archive button is gone; More menu exposes the secondary actions", async () => {
+  const app = makeApp({ routes: { "GET /api/emails": { emails: [cand("m1")] } } });
+  await app.window.loadEmails();
+  assert.equal(app.document.getElementById("ab-archive"), null); // ambiguous button removed
+  selectRow(app.window, app.document.querySelector('#email-list .email-item[data-id="m1"]'));
+  // Primary actions stay visible; the menu is closed until opened.
+  assert.ok($(app.document, "ab-generate") && $(app.document, "ab-smart"));
+  assert.ok($(app.document, "ab-menu").classList.contains("hidden"));
+  click(app.window, $(app.document, "ab-more"));
+  assert.ok(!$(app.document, "ab-menu").classList.contains("hidden"));
+  for (const id of ["ab-move", "ab-label", "ab-read", "ab-unread", "ab-clear-menu"]) {
+    assert.ok($(app.document, id), id + " should be in the menu");
+  }
+});
+
+test("Move to folder archives the selection and calls the label API", async () => {
   const app = makeApp({ routes: {
     "GET /api/emails": { emails: [cand("m1"), cand("m2")] },
-    "POST /api/mailbox/archive": { action: "archive", requested: 1, modified: 1, failed: 0, failures: [] },
+    "GET /api/labels": { labels: [] },
+    "POST /api/mailbox/label": { action: "apply_label", requested: 1, modified: 1, failed: 0, failures: [], label_id: "L_new" },
   } });
   await app.window.loadEmails();
   selectRow(app.window, app.document.querySelector('#email-list .email-item[data-id="m1"]'));
-  click(app.window, $(app.document, "ab-archive"));
+  click(app.window, $(app.document, "ab-more"));
+  click(app.window, $(app.document, "ab-move"));
+  await waitFor(() => !$(app.document, "label-modal").classList.contains("hidden"));
+  // "Move" preset the archive flag (folder = label + remove from inbox).
+  assert.equal($(app.document, "label-archive").checked, true);
+  $(app.document, "label-new").value = "Finance";
+  click(app.window, $(app.document, "label-apply"));
   await waitFor(() => !app.document.querySelector('#email-list .email-item[data-id="m1"]'));
-  const calls = app.callsTo("POST", "/api/mailbox/archive");
+  const calls = app.callsTo("POST", "/api/mailbox/label");
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].body.message_ids, ["m1"]);
+  assert.equal(calls[0].body.label_name, "Finance");
+  assert.equal(calls[0].body.archive, true);
   assert.ok(app.document.querySelector('#email-list .email-item[data-id="m2"]')); // others untouched
 });
 
-test("marking read syncs the row's unread state", async () => {
+test("marking read via the More menu syncs the row's unread state", async () => {
   const app = makeApp({ routes: {
     "GET /api/emails": { emails: [cand("m1")] },
     "POST /api/mailbox/mark-read": { action: "mark_read", requested: 1, modified: 1, failed: 0, failures: [] },
@@ -99,6 +122,7 @@ test("marking read syncs the row's unread state", async () => {
   await app.window.loadEmails();
   assert.ok(app.document.querySelector('#email-list .email-item[data-id="m1"]').classList.contains("unread"));
   selectRow(app.window, app.document.querySelector('#email-list .email-item[data-id="m1"]'));
+  click(app.window, $(app.document, "ab-more"));
   click(app.window, $(app.document, "ab-read"));
   await waitFor(() => {
     const r = app.document.querySelector('#email-list .email-item[data-id="m1"]');

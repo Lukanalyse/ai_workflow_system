@@ -285,18 +285,39 @@ button, input, select, textarea { font-family: inherit; }
 .select-all input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); }
 #result-count { font-variant-numeric: tabular-nums; font-size: 12.5px; }
 
-/* Bulk action bar — appears on selection. */
+/* Selection bar — light, no heavy block. */
 .action-bar {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 9px 12px; margin-bottom: 10px;
-  background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius);
-  box-shadow: var(--shadow-md); animation: ab-in .16s ease-out;
+  display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap;
+  padding: 7px 9px; margin-bottom: var(--s-3);
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-control);
+  animation: ab-in .14s ease-out;
 }
-@keyframes ab-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
-.ab-count { font-size: 13px; color: var(--text); white-space: nowrap; }
-.ab-count b { color: var(--accent-d); font-variant-numeric: tabular-nums; }
-.ab-actions { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
-.ab-status { font-variant-numeric: tabular-nums; font-size: 12.5px; }
+@keyframes ab-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+.ab-count { font-size: 13px; color: var(--muted); white-space: nowrap; margin: 0 2px 0 4px; }
+.ab-count b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ab-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.ab-status { font-variant-numeric: tabular-nums; font-size: 12.5px; margin-left: auto; }
+
+/* Dropdown menu (More actions). */
+.menu-wrap { position: relative; display: inline-flex; }
+.caret { font-size: 10px; opacity: .7; }
+.menu {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 40;
+  min-width: 210px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  display: flex; flex-direction: column; gap: 1px;
+  animation: menu-in .12s ease-out;
+}
+@keyframes menu-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 10px;
+  border: none; background: transparent; cursor: pointer; text-align: left;
+  font-size: 13px; color: var(--text); border-radius: var(--r-control);
+}
+.menu-item:hover { background: var(--hover); }
+.menu-item .mi-ico { width: 16px; text-align: center; opacity: .7; font-size: 12.5px; flex-shrink: 0; }
+.menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
 
 /* Smart Archive plan / result rows. */
 .plan-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }

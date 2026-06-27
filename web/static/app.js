@@ -428,6 +428,8 @@ function clearSelection() {
   selectedIds.clear();
   document.querySelectorAll(".email-item.selected").forEach((n) => n.classList.remove("selected"));
   document.querySelectorAll(".row-cb:checked").forEach((cb) => { cb.checked = false; });
+  const menu = $("ab-menu");
+  if (menu) menu.classList.add("hidden");
   updateSelectionUI();
 }
 
@@ -464,7 +466,7 @@ function setActionStatus(text) { const el = $("ab-status"); if (el) el.textConte
 // --- Gmail mailbox actions (mark read/unread, archive, label) ---------------
 // All actions accept 1..N ids and update the UI optimistically (no full reload).
 function disableActionButtons(disabled) {
-  ["ab-generate", "ab-archive", "ab-label", "ab-read", "ab-unread"].forEach((id) => {
+  ["ab-generate", "ab-smart", "ab-more"].forEach((id) => {
     const b = $(id); if (b) b.disabled = disabled;
   });
 }
@@ -517,18 +519,23 @@ async function runMailbox(actionLabel, path, ids, optimisticFn) {
 }
 
 function actionIds() { return [...selectedIds]; }
-function doArchive(ids) { return runMailbox("Archived", "/api/mailbox/archive", ids, archiveLocal); }
 function doMarkRead(ids) { return runMailbox("Marked read", "/api/mailbox/mark-read", ids, (i) => setUnreadLocal(i, false)); }
 function doMarkUnread(ids) { return runMailbox("Marked unread", "/api/mailbox/mark-unread", ids, (i) => setUnreadLocal(i, true)); }
 
 // --- Label dialog -----------------------------------------------------------
 let labelTargetIds = [];
-async function openLabelModal(ids) {
+// mode "label" = apply label only; "move" = apply label + archive (Move to folder).
+async function openLabelModal(ids, mode = "label") {
   if (!ids.length) return;
   labelTargetIds = ids;
+  const isMove = mode === "move";
+  $("label-modal-title").textContent = isMove ? "Move to folder" : "Apply a label";
+  $("label-apply").textContent = isMove ? "Move" : "Apply label";
+  // Move implies archiving, so the toggle is preset and hidden; Apply leaves it visible/off.
+  $("label-archive").checked = isMove;
+  $("label-archive-row").classList.toggle("hidden", isMove);
   $("label-target-count").textContent = ids.length;
   $("label-new").value = "";
-  $("label-archive").checked = false;
   $("label-select").innerHTML = `<option value="">— select —</option>`;
   $("label-status").textContent = "Loading labels…";
   $("label-modal").classList.remove("hidden");
@@ -814,8 +821,8 @@ function renderDetailActions(em) {
     : `<button class="btn small" data-act="unread">Mark unread</button>`;
   const archiveButtons = mailContext === "archive"
     ? `<button class="btn small primary" data-act="restore">↩ Restore to Inbox</button>`
-    : `<button class="btn small" data-act="archive">Archive</button>` +
-      `<button class="btn small" data-act="label">Label</button>`;
+    : `<button class="btn small" data-act="move"><span aria-hidden="true">📁</span> Move to folder</button>` +
+      `<button class="btn small" data-act="label"><span aria-hidden="true">🏷️</span> Label</button>`;
   el.innerHTML = readBtn + archiveButtons;
   el.querySelectorAll("button").forEach((b) =>
     b.addEventListener("click", () => {
@@ -824,8 +831,8 @@ function renderDetailActions(em) {
       const archived = mailContext === "archive";
       if (act === "read") archived ? doArchMarkRead(ids) : doMarkRead(ids);
       else if (act === "unread") archived ? doArchMarkUnread(ids) : doMarkUnread(ids);
-      else if (act === "archive") doArchive(ids);
-      else if (act === "label") openLabelModal(ids);
+      else if (act === "move") openLabelModal(ids, "move");
+      else if (act === "label") openLabelModal(ids, "label");
       else if (act === "restore") doRestore(ids);
     }));
 }
@@ -2049,18 +2056,30 @@ $("f-attach").addEventListener("click", toggleAttachments);
 $("f-needsreply").addEventListener("click", toggleNeedsReply);
 $("select-all").addEventListener("change", (e) => onSelectAll(e.target.checked));
 $("ab-generate").addEventListener("click", runSelectionDrafts);
-$("ab-clear").addEventListener("click", clearSelection);
-$("ab-archive").addEventListener("click", () => doArchive(actionIds()));
-$("ab-read").addEventListener("click", () => doMarkRead(actionIds()));
-$("ab-unread").addEventListener("click", () => doMarkUnread(actionIds()));
-$("ab-label").addEventListener("click", () => openLabelModal(actionIds()));
 $("ab-smart").addEventListener("click", () => openSmartArchive(actionIds()));
+$("ab-clear").addEventListener("click", clearSelection);
+// More actions menu (open/close + items).
+function setMoreMenu(open) {
+  const menu = $("ab-menu");
+  const show = open === undefined ? menu.classList.contains("hidden") : open;
+  menu.classList.toggle("hidden", !show);
+  $("ab-more").setAttribute("aria-expanded", show ? "true" : "false");
+}
+const closeMoreMenu = () => setMoreMenu(false);
+$("ab-more").addEventListener("click", (e) => { e.stopPropagation(); setMoreMenu(); });
+$("ab-move").addEventListener("click", () => { closeMoreMenu(); openLabelModal(actionIds(), "move"); });
+$("ab-label").addEventListener("click", () => { closeMoreMenu(); openLabelModal(actionIds(), "label"); });
+$("ab-read").addEventListener("click", () => { closeMoreMenu(); doMarkRead(actionIds()); });
+$("ab-unread").addEventListener("click", () => { closeMoreMenu(); doMarkUnread(actionIds()); });
+$("ab-clear-menu").addEventListener("click", () => { closeMoreMenu(); clearSelection(); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeMoreMenu(); });
 $("label-cancel").addEventListener("click", () => $("label-modal").classList.add("hidden"));
 $("label-apply").addEventListener("click", applyLabel);
 $("smart-cancel").addEventListener("click", () => $("smart-modal").classList.add("hidden"));
 $("smart-confirm").addEventListener("click", onSmartConfirm);
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || isModalOpen()) return;
+  if (!$("ab-menu").classList.contains("hidden")) { closeMoreMenu(); return; }
   if (currentTab === "archive" && archiveSelectedIds.size) clearArchiveSelection();
   else if (selectedIds.size) clearSelection();
 });
