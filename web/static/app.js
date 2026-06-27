@@ -242,15 +242,14 @@ async function refreshHealth() {
   try {
     const h = await api("/api/health");
     lastHealth = h;
-    el.className = "health " + (h.status === "ok" ? "ok" : h.status === "degraded" ? "degraded" : "error");
-    el.textContent = `Gmail: ${h.gmail.status} · LLM: ${h.llm.status} · DB: ${h.database.status}`;
-    el.title = `${h.gmail.detail}\n${h.llm.detail}\n${h.database.detail}`;
+    const state = h.status === "ok" ? "ok" : h.status === "degraded" ? "degraded" : "error";
+    el.className = "status-dot " + state;
+    el.title = `System status: ${h.status}\nGmail: ${h.gmail.detail}\nLLM: ${h.llm.detail}\nDB: ${h.database.detail}`;
     renderFsIssues(h.filesystem);
     renderOnboarding();
   } catch (e) {
-    el.className = "health error";
-    el.textContent = "health unavailable";
-    el.title = String(e);
+    el.className = "status-dot error";
+    el.title = "Health unavailable: " + String(e);
   }
 }
 
@@ -1866,8 +1865,8 @@ async function loadConfig() {
   try {
     const s = await api("/api/settings");
     sendingEnabled = !!s.email_sending_enabled;
-    $("mode-tag").textContent = sendingEnabled ? "send enabled" : "draft-only";
-    $("mode-tag").classList.toggle("danger-tag", sendingEnabled);
+    // Only surface the safety indicator when sending is actually enabled.
+    $("mode-tag").classList.toggle("hidden", !sendingEnabled);
     if (selected) $("send-btn").classList.toggle("hidden", !sendingEnabled);
   } catch (_) {}
   try {

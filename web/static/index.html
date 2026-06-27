@@ -4,19 +4,19 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Email Assistant</title>
-  <link rel="stylesheet" href="/static/style.css?v=14" />
+  <link rel="stylesheet" href="/static/style.css?v=15" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="logo">✉️</span>
       <h1>AI Email Assistant</h1>
-      <span class="tag" id="mode-tag">draft-only</span>
     </div>
     <div class="actions">
-      <span id="health" class="health" title="System status">checking…</span>
-      <button id="refresh-btn" class="btn">Load emails</button>
-      <button id="settings-btn" class="btn ghost">⚙ Settings</button>
+      <span id="mode-tag" class="tag danger-tag hidden">send enabled</span>
+      <span id="health" class="status-dot" title="System status"></span>
+      <button id="refresh-btn" class="btn small"><span class="i" aria-hidden="true">↻</span> Refresh</button>
+      <button id="settings-btn" class="btn ghost icon" title="Settings" aria-label="Settings">⚙</button>
     </div>
   </header>
 
@@ -83,8 +83,8 @@
 
       <div class="inbox-toolbar">
         <div class="search-wrap">
-          <span class="search-ico">🔍</span>
-          <input id="search-box" type="search" placeholder="Search subject, sender, snippet…" autocomplete="off" />
+          <span class="search-ico" aria-hidden="true">🔍</span>
+          <input id="search-box" type="search" placeholder="Search mail…" autocomplete="off" />
         </div>
         <div class="toolbar-row">
           <div class="seg" id="status-seg">
@@ -92,7 +92,11 @@
             <button class="seg-btn active" data-status="unread">Unread</button>
             <button class="seg-btn" data-status="read">Read</button>
           </div>
-          <label class="size-sel">Show
+          <div class="filter-chips">
+            <button class="fchip" id="f-attach" data-filter="attachments"><span aria-hidden="true">📎</span> Attachments</button>
+            <button class="fchip" id="f-needsreply" data-filter="needsreply"><span aria-hidden="true">↩</span> Needs reply</button>
+          </div>
+          <label class="size-sel" title="Emails to load">
             <select id="page-size">
               <option value="20">20</option>
               <option value="50">50</option>
@@ -101,10 +105,6 @@
               <option value="all">All</option>
             </select>
           </label>
-        </div>
-        <div class="filter-chips">
-          <button class="fchip" id="f-attach" data-filter="attachments">📎 Has attachments</button>
-          <button class="fchip" id="f-needsreply" data-filter="needsreply">↩ Needs reply</button>
         </div>
       </div>
 
@@ -603,6 +603,6 @@ unsubscribe"></textarea>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/static/app.js?v=18"></script>
+  <script src="/static/app.js?v=19"></script>
 </body>
 </html>

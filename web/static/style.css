@@ -80,13 +80,16 @@ button, input, select, textarea { font-family: inherit; }
 }
 .actions { display: flex; align-items: center; gap: 10px; }
 
-.health {
-  font-size: 12px; padding: 4px 10px; border-radius: 999px;
-  background: #eef0f3; color: var(--muted); border: 1px solid var(--border);
+/* Compact system status: a coloured dot, details on hover. */
+.status-dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--muted);
+  display: inline-block; cursor: help; flex-shrink: 0;
 }
-.health.ok { background: #ecfdf3; color: var(--ok); }
-.health.degraded { background: #fffbeb; color: var(--warn); }
-.health.error { background: #fef2f2; color: var(--err); }
+.status-dot.ok { background: var(--ok); box-shadow: 0 0 0 3px #ecfdf3; }
+.status-dot.degraded { background: var(--warn); box-shadow: 0 0 0 3px #fffbeb; }
+.status-dot.error { background: var(--err); box-shadow: 0 0 0 3px #fef2f2; }
+
+.btn .i { font-size: 14px; line-height: 1; }
 
 /* ===================== Button system (one set of rules) ===================== */
 .btn {
@@ -236,7 +239,7 @@ button, input, select, textarea { font-family: inherit; }
 .attach-chip .att-size { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ===================== Inbox toolbar + selection (Phase 2) ===================== */
-.inbox-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.inbox-toolbar { display: flex; flex-direction: column; gap: var(--s-3); margin-bottom: var(--s-4); }
 .search-wrap { position: relative; display: flex; align-items: center; }
 .search-wrap .search-ico { position: absolute; left: 11px; font-size: 12px; opacity: .55; pointer-events: none; }
 #search-box {
@@ -245,7 +248,8 @@ button, input, select, textarea { font-family: inherit; }
   transition: border-color .12s ease, background .12s ease, box-shadow .12s ease;
 }
 #search-box:focus { outline: none; border-color: var(--accent); background: var(--panel); box-shadow: 0 0 0 3px var(--accent-soft); }
-.toolbar-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.toolbar-row { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+.toolbar-row .size-sel { margin-left: auto; }
 
 /* Segmented status control (All / Unread / Read). */
 .seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 3px; }
@@ -413,17 +417,19 @@ textarea {
 .modal-card label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .modal-card input, .modal-card select { padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
 
-/* Tabs */
+/* Tabs — segmented pill control (Linear/Raycast feel). */
 .tabs {
-  display: flex; gap: 4px; padding: 8px 20px 0;
-  background: var(--panel); border-bottom: 1px solid var(--border);
+  display: inline-flex; gap: 2px; margin: var(--s-3) var(--s-6) 0; padding: 3px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-pill);
 }
 .tab {
-  border: none; background: transparent; cursor: pointer; font-size: 14px;
-  color: var(--muted); padding: 8px 14px; border-bottom: 2px solid transparent;
+  height: var(--h-sm); border: none; background: transparent; cursor: pointer;
+  font-size: 13px; font-weight: 500; color: var(--muted);
+  padding: 0 16px; border-radius: var(--r-pill);
+  transition: background .12s ease, color .12s ease, box-shadow .12s ease;
 }
 .tab:hover { color: var(--text); }
-.tab.active { color: var(--accent-d); border-bottom-color: var(--accent); font-weight: 600; }
+.tab.active { background: var(--panel); color: var(--accent-d); font-weight: 600; box-shadow: var(--shadow-sm); }
 
 /* Usage dashboard */
 .usage-view { padding: 20px; }
