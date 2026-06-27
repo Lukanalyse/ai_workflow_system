@@ -180,6 +180,26 @@ function toast(msg, kind = "ok") {
   toastTimer = setTimeout(() => el.classList.add("hidden"), 4000);
 }
 
+// --- Setup status (deduped + short-cached) ----------------------------------
+// /api/setup/status calls Gmail under the hood, so we avoid firing it several
+// times on boot (onboarding + wizard) or on every idle health tick. Concurrent
+// callers share one in-flight request; results are reused for a few seconds.
+let setupStatusCache = null;
+let setupStatusInFlight = null;
+let setupStatusAt = 0;
+let appConfigured = false; // true once LLM + Gmail are ready (skips idle re-fetch)
+const SETUP_STATUS_TTL_MS = 4000;
+
+function fetchSetupStatus(force = false) {
+  const fresh = Date.now() - setupStatusAt < SETUP_STATUS_TTL_MS;
+  if (!force && setupStatusCache && fresh) return Promise.resolve(setupStatusCache);
+  if (setupStatusInFlight) return setupStatusInFlight;
+  setupStatusInFlight = api("/api/setup/status")
+    .then((s) => { setupStatusCache = s; setupStatusAt = Date.now(); setupStatusInFlight = null; return s; })
+    .catch((e) => { setupStatusInFlight = null; throw e; });
+  return setupStatusInFlight;
+}
+
 // --- Health ----------------------------------------------------------------
 let lastHealth = null; // last /api/health response (drives the DB checklist item)
 let fsBlocked = false; // true when a blocking filesystem issue prevents startup
@@ -1459,7 +1479,8 @@ async function refreshGmailStatus() {
   } catch (e) {
     toast("Gmail status error: " + e.message, "error");
   }
-  renderOnboarding();
+  // Connection state may have just changed — force a fresh setup/status.
+  renderOnboarding(true);
 }
 
 function renderGmailStatus(g) {
@@ -1520,9 +1541,13 @@ function setCheck(key, done) {
   li.querySelector(".ck").textContent = done ? "✓" : "○";
 }
 
-async function renderOnboarding() {
+async function renderOnboarding(force = false) {
+  // Once fully configured the banner stays hidden, so an idle refresh need not
+  // re-hit setup/status (and Gmail) at all — only re-check when asked to.
+  if (appConfigured && !force) { $("onboarding").classList.add("hidden"); return; }
   let s;
-  try { s = await api("/api/setup/status"); } catch (_) { return; }
+  try { s = await fetchSetupStatus(force); } catch (_) { return; }
+  appConfigured = !!s.configured;
   if (s.gmail_email) connectedEmail = s.gmail_email;
   // A blocking filesystem problem takes priority over onboarding: surface it
   // and hide the setup checklist (which can't proceed until disk is fixed).
@@ -1765,7 +1790,8 @@ async function maybeStartWizard() {
     window.history.replaceState({}, "", window.location.pathname);
   }
   let status;
-  try { status = await api("/api/setup/status"); } catch (_) { return; }
+  // Just back from OAuth (gmail param present) -> force fresh; else share cache.
+  try { status = await fetchSetupStatus(!!gmailParam); } catch (_) { return; }
 
   // Don't launch the wizard while a filesystem problem blocks startup — the
   // installation banner explains what to fix first.
@@ -1947,8 +1973,19 @@ $("wiz-creds-file").addEventListener("change", () =>
   }));
 $("wiz-finish").addEventListener("click", () => $("wizard").classList.add("hidden"));
 
+// --- Health polling (visibility-aware) --------------------------------------
+// Only poll while the tab is visible, and refresh immediately when it becomes
+// visible again. A hidden tab makes zero background calls (no wasted Gmail/LLM
+// hits or quota burn); the interval is 60s since health is just a heartbeat.
+let healthTimer = null;
+function startHealthPolling() {
+  if (healthTimer) clearInterval(healthTimer);
+  healthTimer = setInterval(() => { if (!document.hidden) refreshHealth(); }, 60000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshHealth(); });
+
 // Boot
 refreshHealth();
 loadConfig();
 maybeStartWizard();
-setInterval(refreshHealth, 30000);
+startHealthPolling();
