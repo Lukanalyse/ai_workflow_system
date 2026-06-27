@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 
 from googleapiclient.discovery import Resource
 
+from app.email import gmail_http
 from app.email.attachment_detector import AttachmentInfo, detect_attachments
 
 logger = logging.getLogger(__name__)
@@ -88,9 +89,19 @@ class GmailReadConfig:
 
 
 class GmailReader:
-    def __init__(self, service: Resource, user_id: str = "me") -> None:
+    # Class-level default so instances built via ``__new__`` (tests) and any
+    # legacy caller without a factory still work (batch falls back to the
+    # service's default http).
+    _http_factory = None
+
+    def __init__(self, service: Resource, user_id: str = "me", *, http_factory=None) -> None:
         self.service = service
         self.user_id = user_id
+        self._http_factory = http_factory
+
+    def _batch_http(self):
+        """The calling thread's HTTP client for BatchHttpRequest (None in tests)."""
+        return self._http_factory() if self._http_factory is not None else None
 
     def _build_query(self, config: GmailReadConfig) -> str:
         parts = ["in:inbox", "-in:spam", "-in:trash"]
@@ -188,20 +199,14 @@ class GmailReader:
         )
 
     def get_message(self, message_id: str) -> GmailMessage:
-        detail = (
-            self.service.users()
-            .messages()
-            .get(userId=self.user_id, id=message_id, format="full")
-            .execute()
-        )
-        return self._parse_message(detail)
+        return self._parse_message(self._get_full(message_id))
 
     def _get_full(self, message_id: str) -> dict:
-        return (
-            self.service.users()
-            .messages()
-            .get(userId=self.user_id, id=message_id, format="full")
-            .execute()
+        return gmail_http.execute(
+            self.service.users().messages().get(
+                userId=self.user_id, id=message_id, format="full"
+            ),
+            op="messages.get",
         )
 
     def _sequential_get(self, ids: list[str]) -> list[GmailMessage]:
@@ -237,7 +242,7 @@ class GmailReader:
                     request_id=mid,
                     callback=_cb,
                 )
-            batch.execute()
+            gmail_http.execute_batch(batch, http=self._batch_http(), op="messages.get.batch")
 
         # Retry the (rare) per-message failures one by one; a still-failing get
         # raises, exactly as the old sequential path did.
@@ -273,16 +278,14 @@ class GmailReader:
         ids: list[str] = []
         page_token: str | None = None
         while len(ids) < target:
-            resp = (
-                self.service.users()
-                .messages()
-                .list(
+            resp = gmail_http.execute(
+                self.service.users().messages().list(
                     userId=self.user_id,
                     maxResults=min(_GMAIL_PAGE_SIZE, target - len(ids)),
                     q=query,
                     pageToken=page_token,
-                )
-                .execute()
+                ),
+                op="messages.list",
             )
             ids.extend(str(r["id"]) for r in resp.get("messages", []))
             page_token = resp.get("nextPageToken")
@@ -296,11 +299,9 @@ class GmailReader:
         Uses ``labels.get`` (one cheap call), so the Archive folder list never
         has to enumerate a label's messages just to show a count.
         """
-        data = (
-            self.service.users()
-            .labels()
-            .get(userId=self.user_id, id=label_id)
-            .execute()
+        data = gmail_http.execute(
+            self.service.users().labels().get(userId=self.user_id, id=label_id),
+            op="labels.get",
         )
         total = int(data.get("messagesTotal", 0) or 0)
         unread = int(data.get("messagesUnread", 0) or 0)
@@ -357,7 +358,7 @@ class GmailReader:
                     request_id=lid,
                     callback=_cb,
                 )
-            batch.execute()
+            gmail_http.execute_batch(batch, http=self._batch_http(), op="labels.get.batch")
 
         # Retry the (rare) per-label failures individually; degrade to (0,0) if
         # a retry still fails, so a single bad label never breaks the grid.
@@ -376,17 +377,15 @@ class GmailReader:
         reader), keeping the Archive workspace from ever loading a whole label.
         """
         size = max(1, min(int(page_size), _GMAIL_PAGE_SIZE))
-        resp = (
-            self.service.users()
-            .messages()
-            .list(
+        resp = gmail_http.execute(
+            self.service.users().messages().list(
                 userId=self.user_id,
                 labelIds=[label_id],
                 maxResults=size,
                 pageToken=page_token or None,
                 includeSpamTrash=False,
-            )
-            .execute()
+            ),
+            op="messages.list",
         )
         ids = [str(r["id"]) for r in resp.get("messages", [])]
         next_token = resp.get("nextPageToken")

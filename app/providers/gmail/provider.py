@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from app.auth.gmail_auth import GmailAuthManager, build_auth_manager
 from app.auth.oauth_flow import GmailOAuthFlow
@@ -54,6 +55,9 @@ class GmailProvider(EmailProvider):
         self._draft_creator: GmailDraftCreator | None = None
         self._sender: GmailSender | None = None
         self._actions: GmailActions | None = None
+        # Guards lazy service construction so a concurrent first-access burst
+        # builds the client exactly once.
+        self._service_lock = threading.Lock()
         gmail = settings.gmail
         self._token_store = TokenStore(gmail.tokens_dir, legacy_token_path=gmail.token_path)
         self.oauth = GmailOAuthFlow(
@@ -83,33 +87,43 @@ class GmailProvider(EmailProvider):
     def _ensure_service(self) -> None:
         if self._reader is not None:
             return
-        try:
-            from googleapiclient.discovery import build
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(
-                "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
-            ) from exc
-        gmail = self._settings.gmail
-        creds = self._auth_manager().load_credentials()
-        if creds is None:
-            raise RuntimeError(
-                "Gmail is not connected. Open Settings → Gmail and click "
-                "“Connect Gmail” to authorize access."
-            )
-        service = build("gmail", "v1", credentials=creds)
-        # Adopt a legacy token.json into the new store the first time we use it
-        # (its account email isn't known until we can call the API).
-        self._maybe_migrate_legacy(service)
-        self._reader = GmailReader(service, user_id=gmail.user_id)
-        self._draft_creator = GmailDraftCreator(service, user_id=gmail.user_id)
-        self._sender = GmailSender(service, user_id=gmail.user_id)
-        self._actions = GmailActions(service, user_id=gmail.user_id)
+        with self._service_lock:
+            if self._reader is not None:  # another thread built it while we waited
+                return
+            try:
+                from app.email.gmail_http import build_gmail_service
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "Missing dependency: google-api-python-client. Run `pip install -r requirements.txt`."
+                ) from exc
+            gmail = self._settings.gmail
+            creds = self._auth_manager().load_credentials()
+            if creds is None:
+                raise RuntimeError(
+                    "Gmail is not connected. Open Settings → Gmail and click "
+                    "“Connect Gmail” to authorize access."
+                )
+            # Thread-safe transport: every request uses a thread-local HTTP
+            # client, so concurrent calls never share a TLS connection.
+            service, http_factory = build_gmail_service(creds)
+            # Adopt a legacy token.json into the new store the first time we use
+            # it (its account email isn't known until we can call the API).
+            self._maybe_migrate_legacy(service)
+            self._reader = GmailReader(service, user_id=gmail.user_id, http_factory=http_factory)
+            self._draft_creator = GmailDraftCreator(service, user_id=gmail.user_id)
+            self._sender = GmailSender(service, user_id=gmail.user_id)
+            self._actions = GmailActions(service, user_id=gmail.user_id, http_factory=http_factory)
 
     def _maybe_migrate_legacy(self, service) -> None:
         if self._token_store.active_token_path() is not None:
             return
         try:
-            profile = service.users().getProfile(userId=self._settings.gmail.user_id).execute()
+            from app.email.gmail_http import execute as gmail_execute
+
+            profile = gmail_execute(
+                service.users().getProfile(userId=self._settings.gmail.user_id),
+                op="users.getProfile",
+            )
             email = (profile.get("emailAddress") or "").strip().lower()
         except Exception:  # noqa: BLE001 - migration is best-effort
             return
@@ -235,7 +249,12 @@ class GmailProvider(EmailProvider):
         try:
             self._ensure_service()
             assert self._reader is not None
-            self._reader.service.users().getProfile(userId=gmail.user_id).execute()
+            from app.email.gmail_http import execute as gmail_execute
+
+            gmail_execute(
+                self._reader.service.users().getProfile(userId=gmail.user_id),
+                op="users.getProfile",
+            )
             return "ok", "Gmail connected."
         except Exception as exc:  # noqa: BLE001 - health check must not raise
             return "error", f"Gmail check failed: {exc}"
@@ -313,9 +332,12 @@ class GmailProvider(EmailProvider):
         try:
             self._ensure_service()
             assert self._reader is not None
-            profile = self._reader.service.users().getProfile(
-                userId=self._settings.gmail.user_id
-            ).execute()
+            from app.email.gmail_http import execute as gmail_execute
+
+            profile = gmail_execute(
+                self._reader.service.users().getProfile(userId=self._settings.gmail.user_id),
+                op="users.getProfile",
+            )
             return (profile.get("emailAddress") or "").strip().lower() or None
         except Exception:  # noqa: BLE001
             return None

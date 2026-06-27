@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from googleapiclient.discovery import Resource
 
+from app.email import gmail_http
+
 logger = logging.getLogger(__name__)
 
 # Gmail's batchModify accepts up to 1000 message ids per call.
@@ -35,9 +37,12 @@ class GmailActions:
     emails cost the same number of round-trips per 1000.
     """
 
-    def __init__(self, service: Resource, user_id: str = "me") -> None:
+    _http_factory = None
+
+    def __init__(self, service: Resource, user_id: str = "me", *, http_factory=None) -> None:
         self.service = service
         self.user_id = user_id
+        self._http_factory = http_factory
 
     # --- message label mutations --------------------------------------------
     def batch_modify(
@@ -60,7 +65,10 @@ class GmailActions:
                 body["addLabelIds"] = add
             if remove:
                 body["removeLabelIds"] = remove
-            self.service.users().messages().batchModify(userId=self.user_id, body=body).execute()
+            gmail_http.execute(
+                self.service.users().messages().batchModify(userId=self.user_id, body=body),
+                op="messages.batchModify",
+            )
             modified += len(chunk)
         logger.info(
             "batchModify on %d message(s): add=%s remove=%s", modified, add, remove
@@ -69,7 +77,9 @@ class GmailActions:
 
     # --- labels --------------------------------------------------------------
     def list_labels(self) -> list[GmailLabel]:
-        resp = self.service.users().labels().list(userId=self.user_id).execute()
+        resp = gmail_http.execute(
+            self.service.users().labels().list(userId=self.user_id), op="labels.list"
+        )
         labels = [
             GmailLabel(id=str(l.get("id")), name=str(l.get("name")), type=str(l.get("type", "user")))
             for l in resp.get("labels", [])
@@ -83,7 +93,10 @@ class GmailActions:
             "labelListVisibility": "labelShow",
             "messageListVisibility": "show",
         }
-        created = self.service.users().labels().create(userId=self.user_id, body=body).execute()
+        created = gmail_http.execute(
+            self.service.users().labels().create(userId=self.user_id, body=body),
+            op="labels.create",
+        )
         logger.info("Created Gmail label %r (id=%s)", name, created.get("id"))
         return GmailLabel(
             id=str(created.get("id")), name=str(created.get("name", name)), type="user"
