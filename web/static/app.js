@@ -32,6 +32,17 @@ let archiveNextToken = null;     // Gmail nextPageToken for the open folder
 let archiveSearch = "";          // client-side search within the open folder
 let archiveLoading = false;      // a folder page load is in flight
 const archiveSelectedIds = new Set();
+// In-memory cache so tab/folder switches are instant (stale-while-revalidate).
+let foldersLoadedAt = 0;                  // when the folder list was last fetched
+const folderCache = new Map();            // labelId -> { emails, nextToken, at }
+const prefetchedFolders = new Set();      // folders we've hover-prefetched this session
+const ARCHIVE_CACHE_TTL = 60000;          // serve cache instantly; revalidate past this
+function archiveCacheStale(ts) { return Date.now() - ts > ARCHIVE_CACHE_TTL; }
+function invalidateArchiveCache() {
+  folderCache.clear();
+  prefetchedFolders.clear();
+  foldersLoadedAt = 0;
+}
 
 // The list a shared helper should act on, based on the active mail context.
 function emailPool() { return mailContext === "archive" ? archiveEmails : lastEmails; }
@@ -740,10 +751,11 @@ async function confirmSmartArchive() {
     });
     renderSmartResult(r);
     if (smartContext === "archive") {
-      // Reclassified emails leave this folder — refresh the open folder + counts.
+      // Reclassified emails move between folders — drop stale caches and refresh.
+      invalidateArchiveCache();
       clearArchiveSelection();
       reloadArchiveFolder();
-      loadFolders();
+      loadFolders({ force: true });
     } else {
       clearSelection();
       loadEmails(); // archived emails drop out of the inbox view
@@ -848,28 +860,52 @@ function enterArchive() {
   if (archiveFolder) {
     $("archive-home").classList.add("hidden");
     $("archive-folder").classList.remove("hidden");
+    return;
+  }
+  $("archive-home").classList.remove("hidden");
+  $("archive-folder").classList.add("hidden");
+  if (archiveFolders.length) {
+    renderFolderGrid();                                    // instant from memory
+    if (archiveCacheStale(foldersLoadedAt)) loadFolders({ background: true });
   } else {
-    $("archive-home").classList.remove("hidden");
-    $("archive-folder").classList.add("hidden");
     loadFolders();
   }
 }
 
-async function loadFolders() {
+async function loadFolders({ force = false, background = false } = {}) {
+  // Serve the in-memory grid instantly when it's still fresh.
+  if (!force && !background && archiveFolders.length && !archiveCacheStale(foldersLoadedAt)) {
+    renderFolderGrid();
+    return;
+  }
   const empty = $("folder-empty");
   empty.classList.add("hidden");
-  // Only show skeletons on the first load; a background refresh keeps the
-  // current grid visible (no flicker).
-  if (!archiveFolders.length) $("folder-grid").innerHTML = skeletonCards();
+  // Skeletons only on a true first load; a background refresh keeps the current
+  // grid visible (no flicker).
+  if (!archiveFolders.length && !background) $("folder-grid").innerHTML = skeletonCards();
   try {
     const { folders } = await api("/api/archive/folders");
     archiveFolders = folders || [];
+    foldersLoadedAt = Date.now();
     renderFolderGrid();
   } catch (e) {
+    // A silent background refresh must never wipe the grid the user is looking at.
+    if (background) return;
     $("folder-grid").innerHTML = "";
     empty.textContent = "Could not load folders: " + e.message;
     empty.classList.remove("hidden");
   }
+}
+
+// Prefetch a folder's first page on hover-intent (once per folder) so opening
+// it is instant. Cost is bounded: one page, deduped against cache + prefetches.
+function prefetchFolder(folderId) {
+  if (folderCache.has(folderId) || prefetchedFolders.has(folderId)) return;
+  prefetchedFolders.add(folderId);
+  const params = new URLSearchParams({ label_id: folderId, page_size: "25" });
+  api(`/api/archive/emails?${params}`)
+    .then((r) => folderCache.set(folderId, { emails: r.emails || [], nextToken: r.next_page_token || null, at: Date.now() }))
+    .catch(() => prefetchedFolders.delete(folderId)); // allow a later retry
 }
 
 function renderFolderGrid() {
@@ -898,18 +934,21 @@ function renderFolderGrid() {
         </span>
       </button>`;
   }).join("");
-  grid.querySelectorAll(".folder-card").forEach((c) =>
+  grid.querySelectorAll(".folder-card").forEach((c) => {
     c.addEventListener("click", () => {
       const folder = archiveFolders.find((f) => f.id === c.dataset.id);
       if (folder) openFolder(folder);
-    }));
+    });
+    // Hover-intent prefetch (180ms) so a click opens instantly.
+    let hoverTimer = null;
+    c.addEventListener("mouseenter", () => { hoverTimer = setTimeout(() => prefetchFolder(c.dataset.id), 180); });
+    c.addEventListener("mouseleave", () => { if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; } });
+  });
   flashIn(grid);
 }
 
 function openFolder(folder) {
   archiveFolder = folder;
-  archiveEmails = [];
-  archiveNextToken = null;
   archiveSearch = "";
   clearArchiveSelection();
   $("arch-search").value = "";
@@ -917,9 +956,22 @@ function openFolder(folder) {
   $("af-dot").style.background = colorForLabel(folder.name);
   $("archive-home").classList.add("hidden");
   $("archive-folder").classList.remove("hidden");
-  $("arch-email-list").innerHTML = "";
   updateFolderHeaderCount();
-  loadFolderEmails(true);
+
+  const cached = folderCache.get(folder.id);
+  if (cached) {
+    // Instant open from memory (incl. hover-prefetch); revalidate if stale.
+    archiveEmails = cached.emails.slice();
+    archiveNextToken = cached.nextToken;
+    renderArchiveList();
+    flashIn($("arch-email-list"));
+    if (archiveCacheStale(cached.at)) refreshOpenFolder();
+  } else {
+    archiveEmails = [];
+    archiveNextToken = null;
+    $("arch-email-list").innerHTML = "";
+    loadFolderEmails(true);
+  }
 }
 
 function backToFolders() {
@@ -927,7 +979,27 @@ function backToFolders() {
   clearArchiveSelection();
   $("archive-folder").classList.add("hidden");
   $("archive-home").classList.remove("hidden");
-  loadFolders(); // refresh counts after any actions taken inside the folder
+  if (archiveFolders.length) {
+    renderFolderGrid();                       // instant from memory
+    loadFolders({ background: true });         // refresh counts silently
+  } else {
+    loadFolders();
+  }
+}
+
+// Silent first-page revalidation of the open folder (no skeleton flicker).
+async function refreshOpenFolder() {
+  if (!archiveFolder) return;
+  const folderId = archiveFolder.id;
+  try {
+    const params = new URLSearchParams({ label_id: folderId, page_size: "25" });
+    const r = await api(`/api/archive/emails?${params}`);
+    if (!archiveFolder || archiveFolder.id !== folderId) return; // user navigated away
+    archiveEmails = r.emails || [];
+    archiveNextToken = r.next_page_token || null;
+    folderCache.set(folderId, { emails: archiveEmails.slice(), nextToken: archiveNextToken, at: Date.now() });
+    renderArchiveList();
+  } catch (_) { /* keep the cached view on failure */ }
 }
 
 function updateFolderHeaderCount() {
@@ -962,6 +1034,10 @@ async function loadFolderEmails(reset) {
     archiveNextToken = r.next_page_token || null;
     renderArchiveList();
     if (reset) flashIn($("arch-email-list"));
+    // Cache the loaded set so reopening this folder is instant.
+    folderCache.set(archiveFolder.id, {
+      emails: archiveEmails.slice(), nextToken: archiveNextToken, at: Date.now(),
+    });
   } catch (e) {
     empty.textContent = "Error: " + e.message;
   } finally {
@@ -1884,7 +1960,7 @@ $("tab-archive").addEventListener("click", () => showTab("archive"));
 $("tab-usage").addEventListener("click", () => showTab("usage"));
 
 // Archive workspace
-$("arch-refresh").addEventListener("click", loadFolders);
+$("arch-refresh").addEventListener("click", () => { invalidateArchiveCache(); loadFolders({ force: true }); });
 $("arch-back").addEventListener("click", backToFolders);
 $("arch-search").addEventListener("input", (e) => { archiveSearch = e.target.value; debouncedRenderArchive(); });
 $("arch-select-all").addEventListener("change", (e) => onArchiveSelectAll(e.target.checked));
